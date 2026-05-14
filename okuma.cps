@@ -307,6 +307,24 @@ properties = {
     value      : false,
     scope      : "post"
   },
+  // CUSTOM: optional G30 P<n> return to a secondary reference point at program end.
+  gotoSecondaryHomeAtEnd: {
+    title      : "Go to secondary home at program end",
+    description: "If enabled, outputs 'G30 P<n>' at the end of the program to send the machine to a secondary reference point. The reference point number is set by 'Secondary home position number'.",
+    group      : "homePositions",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  secondaryHomePositionNumber: {
+    title      : "Secondary home position number",
+    description: "The P-number used in the 'G30 P<n>' return-to-reference-point block emitted at program end. Only used when 'Go to secondary home at program end' is enabled. Valid range depends on machine configuration (typically 1-9).",
+    group      : "homePositions",
+    type       : "integer",
+    value      : 5,
+    range      : [1, 9],
+    scope      : "post"
+  },
   useChipConveyor: {
     title      : "Use chip conveyor",
     description: "Enable/disable usage of the chip conveyor.",
@@ -2342,6 +2360,11 @@ function onClose() {
   writeRetract(Z);
   if (getSetting("retract.homeXY.onProgramEnd", false)) {
     writeRetract(settings.retract.homeXY.onProgramEnd);
+  }
+
+  // CUSTOM: optional G30 P<n> return to secondary reference point at program end.
+  if (getProperty("gotoSecondaryHomeAtEnd")) {
+    writeBlock(gFormat.format(30), "P" + getProperty("secondaryHomePositionNumber"));
   }
 
   setSpindleLoadMonitor(false); // disable spindle load monitoring

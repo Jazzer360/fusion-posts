@@ -15,31 +15,50 @@ When asked to modify a post, follow these rules:
 3. **Reference documentation:** https://cam.autodesk.com/posts/reference/index.html — always consult this when unsure about an API (`writeBlock`, `gFormat`, `createFormat`, `onSection`, `onLinear`, `getProperty`, etc.). Fetch the page if needed rather than guessing.
 4. **Preserve the public post structure.** The base posts come from Autodesk's public repository and are periodically updated. Keep customizations:
    - Minimally invasive (don't refactor surrounding code).
-   - Clearly marked with a comment like `// CUSTOM: <reason>` so they can be re-applied when the upstream post is updated.
-   - Ideally gated by a user-defined `property` (added to the `properties` and `propertyDefinitions` objects near the top of the post) so behavior is toggleable from Fusion's Post Properties UI.
-5. **Do not introduce ES6+ syntax that may not be supported** by Fusion's embedded engine. The existing posts use ES5-style code (`var`, function expressions, no arrow functions in most places, no template literals). Match the surrounding style.
-6. **Numbered duplicate files** (e.g. `okuma 2.cps`, `okuma 2 2.cps`) are Fusion's automatic duplicates created when the user clicks "Duplicate" on a post in the Manage Posts dialog. They represent historical snapshots of customizations. Do not delete them without asking — they are the user's change history prior to git.
-7. **When updating to a newer upstream post:** the workflow is (a) drop the new public post in as a fresh file, (b) diff against the most recent customized variant to identify the deltas, (c) re-apply the custom deltas on top of the new public version. Use `Compare-Object` in PowerShell or `git diff --no-index` for diffing.
+   - Clearly marked with a comment starting with `// CUSTOM:` so they can be re-applied when the upstream post is updated. Grep for `CUSTOM:` to find every customization site.
+   - Gated by a user-defined property (added to the `properties` object near the top of the post) whenever feasible, so behavior is toggleable from Fusion's Post Properties UI without editing the post.
+5. **Match the surrounding style.** The Autodesk posts use ES5-style code (`var`, function expressions, no arrow functions, no template literals, no `let`/`const`, no destructuring). Do not introduce ES6+ syntax. Fusion's embedded engine is not full modern JS.
+6. **Property definitions** live in the `properties = { ... }` object near the top of the file. Each entry has `title`, `description`, `group`, `type` (`boolean` | `integer` | `number` | `enum` | `string`), `value` (default), optional `range` for numerics, optional `values` array for enums, and `scope: "post"`. Read with `getProperty("name")`.
 
 ---
 
-## File Inventory (as of repo initialization)
+## Upstream-update workflow (branch-based)
 
-| File | Upstream Revision | Upstream Date | Notes |
-|------|-------------------|---------------|-------|
-| `okuma.cps` | 44220 | 2026-04-01 | Current public Okuma milling post. **No customizations applied yet.** This is the base to build from going forward. |
-| `okuma 3.cps` | 44210 | 2026-01-20 | Previous public Okuma milling post **with the G30 P5 customization** (see below). |
-| `okuma 2.cps` | 44084 | 2023-08-14 | Older public Okuma milling post with an earlier `G30 P2` customization. Historical. |
-| `okuma 2 2.cps` | 44084 | 2023-08-14 | Same as `okuma 2.cps` but with `P2` changed to `P5`. The single-line evolution of the customization. |
-| `okuma lb3000 mill-turn.cps` | 44210 | 2026-01-20 | Okuma LB3000 lathe (OSP-300L) mill-turn post. No customizations yet. |
+The base posts come from Autodesk's public library and get updated periodically. To reconcile updates with our customizations:
 
-### Known Customizations (carried forward from prior versions)
+1. **`main`** always holds the latest customized post we use day-to-day.
+2. When Autodesk publishes a new revision:
+   - Create a branch from `main`: `git checkout -b upstream/<revision>-<yyyy-mm-dd>` (e.g. `upstream/44230-2026-07-01`).
+   - On that branch, **replace** the relevant `.cps` file with the unmodified new public version and commit it as a single "vendor drop" commit. This gives us a clean diff between old-public and new-public.
+   - Then re-apply customizations on top (grep for `// CUSTOM:` on `main` to find every site). Commit those separately so the re-application is reviewable.
+   - Merge the branch back into `main` (or fast-forward) once Fusion-tested.
+3. The "vendor drop → re-apply" sequence keeps the history clear: one commit is purely Autodesk's diff, subsequent commits are ours.
 
-- **G30 P5 at program end** (mill posts only).
-  - Adds `G30 P5` after the final `writeRetract` and before `setSpindleLoadMonitor(false)` in `onClose`.
-  - Purpose: send the machine to the user's preferred secondary reference point at end of program (machine-side preset position #5).
-  - Present in: `okuma 3.cps` (line ~2339), `okuma 2 2.cps` (line 3470).
-  - **NOT yet applied to `okuma.cps`.**
+`Compare-Object (Get-Content a.cps) (Get-Content b.cps)` in PowerShell, or `git diff --no-index` / `git diff <branch>`, are the diff tools of choice.
+
+---
+
+## File Inventory
+
+| File | Upstream Revision | Upstream Date | Status |
+|------|-------------------|---------------|--------|
+| `okuma.cps` | 44220 | 2026-04-01 | Active. Customized with optional `G30 P<n>` at program end (see below). |
+| `okuma lb3000 mill-turn.cps` | 44210 | 2026-01-20 | Active. No customizations yet. |
+
+Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and the Autodesk Post Processor Training Guide PDF were removed from the working tree but remain in git history (initial commit) if ever needed.
+
+---
+
+## Active Customizations
+
+### `okuma.cps`
+
+- **Optional `G30 P<n>` return-to-secondary-home at program end.**
+  - Properties (group `homePositions`):
+    - `gotoSecondaryHomeAtEnd` (boolean, default `false`) — master enable.
+    - `secondaryHomePositionNumber` (integer, default `5`, range 1–9) — the `P` value.
+  - Output: `G30 P<n>` is emitted in `onClose`, after the final `writeRetract(Z)` and the optional XY-home retract, and before `setSpindleLoadMonitor(false)`. By that point spindle is stopped, coolant is off, the work plane is canceled, and Z is at retract height — so the absolute move to the secondary reference point is safe.
+  - Marker comment: `// CUSTOM: optional G30 P<n>` (one site in `properties`, one in `onClose`).
 
 ---
 
@@ -47,9 +66,9 @@ When asked to modify a post, follow these rules:
 
 1. Make changes directly to the `.cps` file in this folder.
 2. In Fusion 360 → Manufacturing → Post Process, pick the post (it shows under Personal Posts).
-3. Generate output for a representative toolpath. Inspect the NC file.
-4. Iterate. Commit incremental working changes to git.
-5. For risky changes, branch (`git checkout -b feature/...`).
+3. For boolean/numeric properties added to the post, the new fields show up in the Post Properties panel automatically — toggle/set there and re-post to validate.
+4. Inspect the generated NC file. Iterate.
+5. Commit incremental working changes to git. For risky or upstream-update work, use a branch (see Upstream-update workflow above).
 
 ## Quick Reference: Post API Essentials
 
@@ -58,15 +77,15 @@ When asked to modify a post, follow these rules:
 - `writeComment(text)` — emit a comment (controller-appropriate syntax).
 - `createFormat({...})` / `createOutputVariable(...)` — define how numeric values are formatted/output.
 - Event handlers (called by the engine): `onOpen`, `onSection`, `onSectionEnd`, `onLinear`, `onRapid`, `onCircular`, `onCommand`, `onClose`, `onParameter`, `onCycle`, etc.
-- `getProperty("name")` — read a user-configurable property.
-- `properties` and `propertyDefinitions` objects (top of file) — declare user-configurable settings shown in Fusion's Post Properties dialog.
+- `getProperty("name")` — read a user-configurable property declared in the `properties` object.
+- `getSetting("path.to.setting", default)` — read a value from the post's internal `settings` object.
 - `getSection(i)`, `currentSection`, `isFirstSection()`, `isLastSection()` — section iteration helpers.
 
 Full reference: https://cam.autodesk.com/posts/reference/index.html
 
 ---
 
-## Notes for the User
+## Notes
 
-- This file (`AGENTS.md`) is the canonical AI-assistant briefing. Tools that look for `.github/copilot-instructions.md`, `CLAUDE.md`, or `.cursorrules` can be pointed here via a symlink or short stub if needed.
-- No language runtime is required for development. `git` is the only required tool.
+- This file (`AGENTS.md`) is the canonical AI-assistant briefing — ecosystem-agnostic so it works with GitHub Copilot, Claude Code, Cursor, etc. No tool-specific stubs are required; most modern AI coding tools read `AGENTS.md` directly.
+- No language runtime is required for development. `git` is the only required tool on the host.
