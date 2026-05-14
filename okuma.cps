@@ -243,7 +243,7 @@ properties = {
     description: "Use logic to check if the tool called is staged or already loaded.",
     group      : "preferences",
     type       : "boolean",
-    value      : false,
+    value      : true,
     scope      : "post"
   },
   useClampCodes: {
@@ -313,7 +313,7 @@ properties = {
     description: "If enabled, outputs 'G30 P<n>' at the end of the program to send the machine to a secondary reference point. The reference point number is set by 'Secondary home position number'.",
     group      : "homePositions",
     type       : "boolean",
-    value      : false,
+    value      : true,
     scope      : "post"
   },
   secondaryHomePositionNumber: {
@@ -3871,7 +3871,7 @@ properties.useSubroutines = {
     {title:"Operations, Patterns, Cycles", id:"all"},
     {title:"Patterns", id:"patterns"}
   ],
-  value: "none",
+  value: "allOperations",
   scope: "post"
 };
 properties.useFilesForSubprograms = {
