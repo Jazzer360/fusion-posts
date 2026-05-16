@@ -431,8 +431,8 @@ var settings = {
       {id:COOLANT_FLOOD, on:8},
       {id:COOLANT_MIST, on:7},
       {id:COOLANT_THROUGH_TOOL, on:50},
-      {id:COOLANT_AIR, on:51},
-      {id:COOLANT_AIR_THROUGH_TOOL, on:[12, 339]},
+      {id:COOLANT_AIR, on:12},
+      {id:COOLANT_AIR_THROUGH_TOOL, on:[339]},
       {id:COOLANT_SUCTION},
       {id:COOLANT_FLOOD_MIST},
       {id:COOLANT_FLOOD_THROUGH_TOOL},
@@ -1666,6 +1666,7 @@ function isRenishawProbeCycle(type) {
   case "probing-x":
   case "probing-y":
   case "probing-z":
+  case "probing-xy-circular-hole":
   case "probing-xy-rectangular-boss":
     return true;
   }
@@ -1855,6 +1856,19 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-xy-circular-hole":
+    // CUSTOM: Renishaw O9901 PM=2 circular-hole probe. Rapid to the hole center XY,
+    // drop Z to measurement depth, then issue the macro with the nominal diameter.
+    if (getProperty("useRenishawProbing")) {
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
+      writeBlock(
+        macroCall + 9901,
+        "PM=2",
+        "PD=" + xyzFormat.format(cycle.width1),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
     writeBlock(
       macroCall + 9814,
@@ -1923,7 +1937,6 @@ function writeProbeCycle(cycle, x, y, z) {
     // boss, then issue a single call with X/Y widths and an incremental Z plunge.
     if (getProperty("useRenishawProbing")) {
       gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "X" + xyzFormat.format(x), "Y" + xyzFormat.format(y));
       writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
       writeBlock(
         macroCall + 9901,
