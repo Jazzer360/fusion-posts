@@ -1666,6 +1666,10 @@ function isRenishawProbeCycle(type) {
   case "probing-x":
   case "probing-y":
   case "probing-z":
+  case "probing-x-wall":
+  case "probing-y-wall":
+  case "probing-x-channel":
+  case "probing-y-channel":
   case "probing-xy-circular-hole":
   case "probing-xy-circular-boss":
   case "probing-xy-rectangular-boss":
@@ -1768,6 +1772,21 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-x-wall":
+    // CUSTOM: Renishaw O9901 PM=5 X-wall macro. Stay above the wall; PW is the
+    // incremental Z plunge from the start position to the measurement depth (negative).
+    if (getProperty("useRenishawProbing")) {
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
+      writeBlock(
+        macroCall + 9901,
+        "PM=5",
+        "PA=1",
+        "PD=" + xyzFormat.format(cycle.width1),
+        "PW=" + xyzFormat.format(-cycle.depth),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z);
     writeBlock(
       macroCall + 9812,
@@ -1779,6 +1798,21 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-y-wall":
+    // CUSTOM: Renishaw O9901 PM=5 Y-wall macro. Stay above the wall; PW is the
+    // incremental Z plunge from the start position to the measurement depth (negative).
+    if (getProperty("useRenishawProbing")) {
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
+      writeBlock(
+        macroCall + 9901,
+        "PM=5",
+        "PA=2",
+        "PD=" + xyzFormat.format(cycle.width1),
+        "PW=" + xyzFormat.format(-cycle.depth),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z);
     writeBlock(
       macroCall + 9812,
@@ -1790,6 +1824,20 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-x-channel":
+    // CUSTOM: Renishaw O9901 PM=4 X-channel (web) macro. Drop Z into the channel,
+    // then call with PA=1 (X axis) and the nominal channel width.
+    if (getProperty("useRenishawProbing")) {
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
+      writeBlock(
+        macroCall + 9901,
+        "PM=4",
+        "PA=1",
+        "PD=" + xyzFormat.format(cycle.width1),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
     writeBlock(
       macroCall + 9812,
@@ -1811,6 +1859,20 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-y-channel":
+    // CUSTOM: Renishaw O9901 PM=4 Y-channel (web) macro. Drop Z into the channel,
+    // then call with PA=2 (Y axis) and the nominal channel width.
+    if (getProperty("useRenishawProbing")) {
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
+      writeBlock(
+        macroCall + 9901,
+        "PM=4",
+        "PA=2",
+        "PD=" + xyzFormat.format(cycle.width1),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
     writeBlock(
       macroCall + 9812,
