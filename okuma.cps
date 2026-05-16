@@ -1667,6 +1667,7 @@ function isRenishawProbeCycle(type) {
   case "probing-y":
   case "probing-z":
   case "probing-xy-circular-hole":
+  case "probing-xy-circular-boss":
   case "probing-xy-rectangular-boss":
     return true;
   }
@@ -1831,6 +1832,20 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-xy-circular-boss":
+    // CUSTOM: Renishaw O9901 PM=3 circular-boss macro. Stay above the boss; PW is the
+    // incremental Z plunge from the start position to the measurement depth (negative).
+    if (getProperty("useRenishawProbing")) {
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
+      writeBlock(
+        macroCall + 9901,
+        "PM=3",
+        "PD=" + xyzFormat.format(cycle.width1),
+        "PW=" + xyzFormat.format(-cycle.depth),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z);
     writeBlock(
       macroCall + 9814,
