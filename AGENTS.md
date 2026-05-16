@@ -65,6 +65,8 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
     - `useRenishawProbing` (boolean, default `true`) — when on, supported probing cycles emit `CALL O9901 PM=<mode> ...` instead of the Autodesk Okuma defaults.
   - Cycles ported so far:
     - `probing-xy-rectangular-boss` → rapid (G00 XY then G00 Z) to the start position above the boss, then `CALL O9901 PM=11 PD=<width1> PE=<width2> PW=<-depth> PS=<probeWorkOffset>`. `PW` is the incremental Z plunge from the start position to the measurement depth (negative).
+    - `probing-x` / `probing-y` → rapid to a start point offset from the surface by `probeClearance + toolRadius` in the opposite of the approach direction, drop Z to measurement depth (`z - depth`), then `CALL O9901 PM=1 PA=<±1|±2> PS=<probeWorkOffset>`. `PA` enum: `1` X+, `-1` X-, `2` Y+, `-2` Y-. Sign comes from `cycle.approach1` (`positive` → +, `negative` → -).
+    - `probing-z` → rapid XY to the surface point, drop Z to `(z - depth + probeClearance)`, then `CALL O9901 PM=1 PA=-3 PS=<probeWorkOffset>` (Z-minus only — the Renishaw enum has no Z+).
   - When `useRenishawProbing` is on, the following standard Okuma probe calls are suppressed because the O9901 macro family handles probe spin and protected motion internally:
     - `CALL O9832` (probe spin-on) at section start.
     - `CALL O9833` (probe spin-off) at section end.

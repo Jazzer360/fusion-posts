@@ -1601,6 +1601,9 @@ function protectedProbeMove(_cycle, x, y, z) {
 // probe internally.
 function isRenishawProbeCycle(type) {
   switch (type) {
+  case "probing-x":
+  case "probing-y":
+  case "probing-z":
   case "probing-xy-rectangular-boss":
     return true;
   }
@@ -1634,6 +1637,20 @@ function writeProbeCycle(cycle, x, y, z) {
   var macroCall = settings.probing.macroCall;
   switch (cycleType) {
   case "probing-x":
+    // CUSTOM: Renishaw O9901 PM=1 single-surface X probe.
+    if (getProperty("useRenishawProbing")) {
+      var apprX = approach(cycle.approach1);
+      var startX = x - apprX * (cycle.probeClearance + tool.diameter / 2);
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
+      writeBlock(
+        macroCall + 9901,
+        "PM=1",
+        "PA=" + integerFormat.format(apprX * 1),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
     writeBlock(
       macroCall + 9811,
@@ -1643,6 +1660,20 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-y":
+    // CUSTOM: Renishaw O9901 PM=1 single-surface Y probe.
+    if (getProperty("useRenishawProbing")) {
+      var apprY = approach(cycle.approach1);
+      var startY = y - apprY * (cycle.probeClearance + tool.diameter / 2);
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
+      writeBlock(
+        macroCall + 9901,
+        "PM=1",
+        "PA=" + integerFormat.format(apprY * 2),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
     writeBlock(
       macroCall + 9811,
@@ -1652,6 +1683,18 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-z":
+    // CUSTOM: Renishaw O9901 PM=1 single-surface Z probe (Z-minus only).
+    if (getProperty("useRenishawProbing")) {
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth + cycle.probeClearance));
+      writeBlock(
+        macroCall + 9901,
+        "PM=1",
+        "PA=-3",
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, Math.min(z - cycle.depth + cycle.probeClearance, cycle.retract));
     writeBlock(
       macroCall + 9811,
