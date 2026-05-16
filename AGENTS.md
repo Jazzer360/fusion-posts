@@ -60,6 +60,18 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - Output: `G30 P<n>` is emitted in `onClose`, after the final `writeRetract(Z)` and the optional XY-home retract, and before `setSpindleLoadMonitor(false)`. By that point spindle is stopped, coolant is off, the work plane is canceled, and Z is at retract height — so the absolute move to the secondary reference point is safe.
   - Marker comment: `// CUSTOM: optional G30 P<n>` (one site in `properties`, one in `onClose`).
 
+- **Renishaw Inspection Plus (`O9901`) probing macros.**
+  - Property (group `probing`):
+    - `useRenishawProbing` (boolean, default `true`) — when on, supported probing cycles emit `CALL O9901 PM=<mode> ...` instead of the Autodesk Okuma defaults.
+  - Cycles ported so far:
+    - `probing-xy-rectangular-boss` → rapid (G00 XY then G00 Z) to the start position above the boss, then `CALL O9901 PM=11 PD=<width1> PE=<width2> PW=<-depth> PS=<probeWorkOffset>`. `PW` is the incremental Z plunge from the start position to the measurement depth (negative).
+  - When `useRenishawProbing` is on, the following standard Okuma probe calls are suppressed because the O9901 macro family handles probe spin and protected motion internally:
+    - `CALL O9832` (probe spin-on) at section start.
+    - `CALL O9833` (probe spin-off) at section end.
+    - The leading `CALL O9810` protected entry move and the trailing `CALL O9810` retract — suppressed only for cycle types listed in `isRenishawProbeCycle` (so non-ported cycles still use the standard protected motion if they ever run with the property on).
+  - Marker comment: `// CUSTOM: Renishaw` (property definition + `isRenishawProbeCycle` helper + each gated site).
+
+
 ---
 
 ## Working Workflow

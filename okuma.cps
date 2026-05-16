@@ -278,6 +278,15 @@ properties = {
     value      : true,
     scope      : "post"
   },
+  // CUSTOM: Renishaw Inspection Plus macros (O9901 family) for our probing system.
+  useRenishawProbing: {
+    title      : "Use Renishaw O9901 probing macros",
+    description: "If enabled, supported probing cycles are emitted as 'CALL O9901 PM=<mode> ...' calls for the Renishaw probing system, instead of the default Autodesk Okuma probing macros.",
+    group      : "probing",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
   centerPointOutput: {
     title      : "Output coordinates at center of ball end mill",
     description: "Enable to output the coordinates at the center of a ball end mill during multi-axis moves.",
@@ -761,7 +770,10 @@ function onSection() {
 
   if (isProbeOperation()) {
     validate(probeVariables.probeAngleMethod != "G68", "You cannot probe while G11 Rotation is in effect.");
-    writeBlock(settings.probing.macroCall + 9832); // spin the probe on
+    // CUSTOM: Renishaw O9901 macros handle their own probe spin-on; skip O9832.
+    if (!getProperty("useRenishawProbing")) {
+      writeBlock(settings.probing.macroCall + 9832); // spin the probe on
+    }
     inspectionCreateResultsFileHeader();
     feedOutput.reset();
   }
@@ -1289,7 +1301,11 @@ function onCycleEnd() {
   if (isProbeOperation()) {
     zOutput.reset();
     gMotionModal.reset();
-    writeBlock(settings.probing.macroCall + 9810, zOutput.format(cycle.retract)); // protected retract move
+    // CUSTOM: Renishaw O9901 cycles return the probe to the start Z themselves; skip the
+    // O9810 protected retract for ported cycle types.
+    if (!(getProperty("useRenishawProbing") && isRenishawProbeCycle(cycleType))) {
+      writeBlock(settings.probing.macroCall + 9810, zOutput.format(cycle.retract)); // protected retract move
+    }
     xOutput.setPrefix("X");
     yOutput.setPrefix("Y");
     zOutput.setPrefix("Z");
@@ -1579,6 +1595,18 @@ function protectedProbeMove(_cycle, x, y, z) {
   }
 }
 
+// CUSTOM: Renishaw — cycle types handled by the O9901 macro family. When
+// 'useRenishawProbing' is enabled, these cycles skip the standard O9810 leading
+// and trailing protected moves because the O9901 macro positions and retracts the
+// probe internally.
+function isRenishawProbeCycle(type) {
+  switch (type) {
+  case "probing-xy-rectangular-boss":
+    return true;
+  }
+  return false;
+}
+
 function writeProbeCycle(cycle, x, y, z) {
   if (isProbeOperation()) {
     if (!settings.workPlaneMethod.useTiltedWorkplane && !isSameDirection(currentSection.workPlane.forward, new Vector(0, 0, 1))) {
@@ -1596,7 +1624,11 @@ function writeProbeCycle(cycle, x, y, z) {
       }
       inspectionFileClose();
     }
-    protectedProbeMove(cycle, x, y, z);
+    // CUSTOM: Renishaw — skip the leading O9810 protected entry for cycles handled by
+    // the O9901 macro family (the macro positions the probe itself).
+    if (!(getProperty("useRenishawProbing") && isRenishawProbeCycle(cycleType))) {
+      protectedProbeMove(cycle, x, y, z);
+    }
   }
 
   var macroCall = settings.probing.macroCall;
@@ -1782,6 +1814,22 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-xy-rectangular-boss":
+    // CUSTOM: Renishaw O9901 PM=11 boss-probe macro. Rapid to the start position above the
+    // boss, then issue a single call with X/Y widths and an incremental Z plunge.
+    if (getProperty("useRenishawProbing")) {
+      gMotionModal.reset();
+      writeBlock(gMotionModal.format(0), "X" + xyzFormat.format(x), "Y" + xyzFormat.format(y));
+      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
+      writeBlock(
+        macroCall + 9901,
+        "PM=11",
+        "PD=" + xyzFormat.format(cycle.width1),
+        "PE=" + xyzFormat.format(cycle.width2),
+        "PW=" + xyzFormat.format(-cycle.depth),
+        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
+      );
+      break;
+    }
     protectedProbeMove(cycle, x, y, z);
     writeBlock(
       macroCall + 9812,
@@ -2286,7 +2334,10 @@ function onSectionEnd() {
   loadMonitorVal = getProperty("loadMonitorVal");
 
   if (isProbeOperation()) {
-    writeBlock(settings.probing.macroCall + 9833); // spin the probe off
+    // CUSTOM: Renishaw O9901 macros handle their own probe spin-off; skip O9833.
+    if (!getProperty("useRenishawProbing")) {
+      writeBlock(settings.probing.macroCall + 9833); // spin the probe off
+    }
     if (probeVariables.probeAngleMethod != "G68") {
       setProbeAngle(); // output probe angle rotations if required
     }

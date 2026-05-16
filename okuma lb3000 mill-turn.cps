@@ -55,7 +55,7 @@ properties = {
     description: "Specifies if the machine has a secondary spindle.",
     group      : "configuration",
     type       : "boolean",
-    value      : true,
+    value      : false,
     scope      : "post"
   },
   xAxisMinimum: {
@@ -72,7 +72,7 @@ properties = {
     description: "Specifies whether part catcher code should be output.",
     group      : "configuration",
     type       : "boolean",
-    value      : true,
+    value      : false,
     scope      : "post"
   },
   gotChipConveyor: {
@@ -81,7 +81,7 @@ properties = {
     group       : "configuration",
     type        : "boolean",
     presentation: "yesno",
-    value       : true,
+    value       : false,
     scope       : "post"
   },
   maxTool: {
