@@ -325,6 +325,15 @@ properties = {
     value      : true,
     scope      : "post"
   },
+  // CUSTOM: optional G30 P<n> before every M00 program stop.
+  gotoSecondaryHomeAtStop: {
+    title      : "Go to secondary home before program stop",
+    description: "If enabled, outputs 'G30 P<n>' immediately before each M00 program stop. The reference point number is set by 'Secondary home position number'.",
+    group      : "homePositions",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
   secondaryHomePositionNumber: {
     title      : "Secondary home position number",
     description: "The P-number used in the 'G30 P<n>' return-to-reference-point block emitted at program end. Only used when 'Go to secondary home at program end' is enabled. Valid range depends on machine configuration (typically 1-9).",
@@ -699,6 +708,10 @@ function onSection() {
     }
   }
 
+  // CUSTOM: flush buffered Manual NC stops in their own labeled section, before
+  // the new operation's comment header is written.
+  flushBufferedManualNCStops();
+
   writeln("");
   writeComment(getParameter("operation-comment", ""));
 
@@ -814,6 +827,19 @@ function onManualNC(command, value) {
       expandManualNC(command, value);
     }
     break;
+  // CUSTOM: buffer program stops so they fire after the previous section's full
+  // retract/spindle-stop wrap-up, not in the middle of it. They are executed by
+  // flushBufferedManualNCStops() at the start of the next section, after
+  // writeRetract(Z) and disableLengthCompensation() but before the new tool call.
+  // The operation comment is captured here so the flush can emit a (Manual NC) header.
+  case COMMAND_STOP:
+  case COMMAND_OPTIONAL_STOP:
+    manualNC.push({
+      command: command,
+      value  : value,
+      comment: hasParameter("operation-comment") ? getParameter("operation-comment") : "Manual NC Stop"
+    });
+    break;
   default:
     expandManualNC(command, value);
   }
@@ -832,6 +858,42 @@ function executeManualNC(command) {
   for (var i = manualNC.length - 1; i >= 0; --i) {
     if (!command || (command == manualNC[i].command)) {
       manualNC.splice(i, 1);
+    }
+  }
+}
+
+// CUSTOM: flush buffered Manual NC stops (M00 / M01) in their own labeled section
+// between operations. Emits a blank line + (operation-comment) header, then the
+// stop commands themselves (which include any injected G30 P<n>). Consecutive
+// buffered stops sharing the same captured comment are grouped under one header.
+function flushBufferedManualNCStops() {
+  var isStop = function (cmd) {
+    return cmd == COMMAND_STOP || cmd == COMMAND_OPTIONAL_STOP;
+  };
+  var lastComment;
+  var lastCommentSet = false;
+  var flushed = false;
+  for (var i = 0; i < manualNC.length; ++i) {
+    if (!isStop(manualNC[i].command)) {
+      continue;
+    }
+    var c = manualNC[i].comment;
+    if (!lastCommentSet || c !== lastComment) {
+      writeln("");
+      if (c) {
+        writeComment(c);
+      }
+      lastComment = c;
+      lastCommentSet = true;
+    }
+    expandManualNC(manualNC[i].command, manualNC[i].value);
+    flushed = true;
+  }
+  if (flushed) {
+    for (var j = manualNC.length - 1; j >= 0; --j) {
+      if (isStop(manualNC[j].command)) {
+        manualNC.splice(j, 1);
+      }
     }
   }
 }
@@ -2253,6 +2315,10 @@ function onCommand(command) {
     setCoolant(tool.coolant);
     return;
   case COMMAND_STOP:
+    // CUSTOM: send machine to the secondary reference point before the M00 stop.
+    if (getProperty("gotoSecondaryHomeAtStop")) {
+      writeBlock(gFormat.format(30), "P" + getProperty("secondaryHomePositionNumber"));
+    }
     writeBlock(mFormat.format(0));
     forceSpindleSpeed = true;
     forceCoolant = true;

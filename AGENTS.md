@@ -60,6 +60,17 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - Output: `G30 P<n>` is emitted in `onClose`, after the final `writeRetract(Z)` and the optional XY-home retract, and before `setSpindleLoadMonitor(false)`. By that point spindle is stopped, coolant is off, the work plane is canceled, and Z is at retract height — so the absolute move to the secondary reference point is safe.
   - Marker comment: `// CUSTOM: optional G30 P<n>` (one site in `properties`, one in `onClose`).
 
+- **Optional `G30 P<n>` before every `M00` program stop.**
+  - Property (group `homePositions`):
+    - `gotoSecondaryHomeAtStop` (boolean, default `true`) — emit `G30 P<n>` immediately before each `M00`. Reuses `secondaryHomePositionNumber` for the `P` value.
+  - Output: in `onCommand` for `COMMAND_STOP`, a `G30 P<n>` block is written before the `M00`.
+  - Marker comment: `// CUSTOM: optional G30 P<n> before every M00` (one site in `properties`, one in `onCommand`).
+
+- **Buffer Manual NC `Stop` / `Optional Stop` between sections.**
+  - Default Autodesk behavior fires Manual NC `COMMAND_STOP` / `COMMAND_OPTIONAL_STOP` immediately inside `onManualNC` (via `expandManualNC`), which lands the `M00` / `M01` in the middle of the previous section's wrap-up (between coolant-off and spindle-stop / retract).
+  - Customization: those two commands are pushed onto the `manualNC` buffer (alongside `COMMAND_PASS_THROUGH`), with the Manual NC operation's `operation-comment` captured at push time. A dedicated `flushBufferedManualNCStops()` runs early in the next `onSection` — after `writeRetract(Z)` / `disableLengthCompensation()` of the previous section but before the new section's own comment header — and writes a blank line + `(Manual NC name)` comment, then the stop block (which carries any injected `G30 P<n>`). Consecutive buffered stops sharing the same captured comment are grouped under one header. Items are removed from the buffer once flushed so the existing later `executeManualNC()` call doesn't re-emit them.
+  - Marker comment: `// CUSTOM: buffer program stops` / `// CUSTOM: flush buffered Manual NC stops` (one site in `onManualNC`, one in `executeManualNC` / new `flushBufferedManualNCStops`, one in `onSection`).
+
 - **Renishaw Inspection Plus (`O9901`) probing macros.**
   - Property (group `probing`):
     - `useRenishawProbing` (boolean, default `true`) — when on, supported probing cycles emit `CALL O9901 PM=<mode> ...` instead of the Autodesk Okuma defaults.
