@@ -1175,19 +1175,36 @@ function writeFixtureOffset(abc, reset) {
   // CUSTOM: tombstone rotary WCS - OO88's PA/PB/PC parameters are the rotation
   // from the WCS's *probed* orientation to the current machine orientation. The
   // macro assumes the WCS was probed at 0 deg on the tombstone rotary axis, but
-  // when `tombstoneRotaryInitial` is non-zero the WCS is actually probed at that
-  // orientation. Subtract `initial` from the rotary coord (wrapping into
-  // [0, 2*PI)) so OO88 receives the correct delta. Only applies on non-reset
-  // calls; the cancel/reset path keeps PA/PB/PC at 0 to cleanly tear down OO88.
+  // when a tombstone offset is configured each WCS is actually probed at its own
+  // home angle: `rank*spacing + initial` deg on the tombstone rotary (the part
+  // facing the spindle for that WCS). Subtract that home angle from the rotary
+  // coord (wrapping into [0, 2*PI)) so OO88 receives the correct delta. Only
+  // applies on non-reset calls; the cancel/reset path keeps PA/PB/PC at 0 to
+  // cleanly tear down OO88.
   var oo88Abc = abc;
   if (!reset && tombstoneRotaryCoord >= 0) {
+    var rank = tombstoneWCSRank[currentSection.workOffset];
+    var spacing = getProperty("tombstoneRotarySpacing");
     var initialDeg = getProperty("tombstoneRotaryInitial") || 0;
-    if (initialDeg) {
+    var rankDeg = (rank != undefined && spacing > 0) ? rank * spacing : 0;
+    var homeDeg = rankDeg + initialDeg;
+    if (homeDeg) {
       var v = [abc.x, abc.y, abc.z];
       var twoPi = Math.PI * 2;
-      v[tombstoneRotaryCoord] = ((v[tombstoneRotaryCoord] - toRad(initialDeg)) % twoPi + twoPi) % twoPi;
+      v[tombstoneRotaryCoord] = ((v[tombstoneRotaryCoord] - toRad(homeDeg)) % twoPi + twoPi) % twoPi;
       oo88Abc = new Vector(v[0], v[1], v[2]);
     }
+  }
+  // CUSTOM: skip OO88 entirely for probing sections. Each WCS is probed with the
+  // tombstone rotated so the part faces the spindle (i.e. at the WCS's own home
+  // angle), so the WCS is established in its un-rotated frame. Emitting OO88
+  // here would tell the controller "the WCS was probed at B0 but we're now at
+  // B<n>" and the probe macros would measure in the wrong place. writeWCS has
+  // already emitted G15 H<workOffset> for the operation; nothing else is needed.
+  // Leaving state.twpIsActive untouched (early return below the assignment) keeps
+  // the next section's cancelWorkPlane from emitting a spurious OO88 reset block.
+  if (!reset && isProbeOperation()) {
+    return;
   }
   switch (getProperty("tiltedWorkPlaneMethod", "none")) {
   case "OO88":
