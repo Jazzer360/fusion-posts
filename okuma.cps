@@ -724,11 +724,21 @@ function applyTombstoneRotaryOffset(_section, abc) {
   var delta = toRad(totalDeg); // abc Vectors are in radians internally
   var v = [abc.x, abc.y, abc.z];
   v[tombstoneRotaryCoord] += delta;
-  // Wrap into [0, 2*PI) so the rotary doesn't emit B values > 360 deg when the
-  // operation's natural angle is negative/large (e.g. B315 + 270 deg offset would
-  // otherwise become B585 instead of B225). Safe because the table axis is cyclic.
+  // Wrap into (0, 2*PI] so the rotary doesn't emit B values > 360 deg when the
+  // operation's natural angle plus the tombstone offset overflows past one
+  // revolution (e.g. natural B315 + 270 deg offset would otherwise become B585
+  // instead of B225). The (0, 2*PI] range (rather than [0, 2*PI)) is deliberate:
+  // when natural + offset sums to exactly 0 (e.g. natural B-90 + initial 90),
+  // the result is mapped to 2*PI rather than 0 so the downstream `abc.isZero()`
+  // checks in setWorkPlane / defineWorkPlane don't mistake the section for a
+  // "no rotation needed / cancel workplane" case. The 2*PI marker is collapsed
+  // back to 0 at the actual positionABC output site (in setWorkPlane).
   var twoPi = Math.PI * 2;
-  v[tombstoneRotaryCoord] = ((v[tombstoneRotaryCoord] % twoPi) + twoPi) % twoPi;
+  var wrapped = v[tombstoneRotaryCoord] % twoPi;
+  if (wrapped <= 0) {
+    wrapped += twoPi;
+  }
+  v[tombstoneRotaryCoord] = wrapped;
   return new Vector(v[0], v[1], v[2]);
 }
 
@@ -1113,8 +1123,18 @@ function setWorkPlane(abc) {
       if (machineConfiguration.isMultiAxisConfiguration()) {
         var machineABC = abc.isNonZero() ? (currentSection.isMultiAxis() ? getCurrentDirection() : getWorkPlaneMachineABC(currentSection, false)) : abc;
         // CUSTOM: tombstone rotary WCS offset - keep the physical rotary in sync
-        // with the offset already baked into `abc` by defineWorkPlane.
+        // with the offset already baked into `abc` by defineWorkPlane. Then
+        // collapse the (0, 2*PI] marker (which applyTombstoneRotaryOffset uses
+        // when natural + offset wraps to exactly 0) back to [0, 2*PI) for the
+        // rotary output so positionABC writes `B0` rather than `B360`.
         machineABC = applyTombstoneRotaryOffset(currentSection, machineABC);
+        if (tombstoneRotaryCoord >= 0) {
+          var mv = [machineABC.x, machineABC.y, machineABC.z];
+          var twoPi = Math.PI * 2;
+          mv[tombstoneRotaryCoord] = mv[tombstoneRotaryCoord] % twoPi;
+          if (mv[tombstoneRotaryCoord] < 0) { mv[tombstoneRotaryCoord] += twoPi; }
+          machineABC = new Vector(mv[0], mv[1], mv[2]);
+        }
         if (settings.workPlaneMethod.useABCPrepositioning || machineABC.isZero()) {
           positionABC(machineABC, false);
         } else {
@@ -1137,6 +1157,23 @@ function setWorkPlane(abc) {
 }
 
 function writeFixtureOffset(abc, reset) {
+  // CUSTOM: tombstone rotary WCS - OO88's PA/PB/PC parameters are the rotation
+  // from the WCS's *probed* orientation to the current machine orientation. The
+  // macro assumes the WCS was probed at 0 deg on the tombstone rotary axis, but
+  // when `tombstoneRotaryInitial` is non-zero the WCS is actually probed at that
+  // orientation. Subtract `initial` from the rotary coord (wrapping into
+  // [0, 2*PI)) so OO88 receives the correct delta. Only applies on non-reset
+  // calls; the cancel/reset path keeps PA/PB/PC at 0 to cleanly tear down OO88.
+  var oo88Abc = abc;
+  if (!reset && tombstoneRotaryCoord >= 0) {
+    var initialDeg = getProperty("tombstoneRotaryInitial") || 0;
+    if (initialDeg) {
+      var v = [abc.x, abc.y, abc.z];
+      var twoPi = Math.PI * 2;
+      v[tombstoneRotaryCoord] = ((v[tombstoneRotaryCoord] - toRad(initialDeg)) % twoPi + twoPi) % twoPi;
+      oo88Abc = new Vector(v[0], v[1], v[2]);
+    }
+  }
   switch (getProperty("tiltedWorkPlaneMethod", "none")) {
   case "OO88":
     if (!state.twpIsActive && abc.isZero()) {
@@ -1147,9 +1184,9 @@ function writeFixtureOffset(abc, reset) {
       "PX=" + xyzFormat.format(reset ? 0 : currentSection.workOrigin.x),
       "PY=" + xyzFormat.format(reset ? 0 : currentSection.workOrigin.y),
       "PZ=" + xyzFormat.format(reset ? 0 : currentSection.workOrigin.z),
-      conditional(machineConfiguration.isMachineCoordinate(2), "PC=" + abcFormat.format(abc.z)),
-      conditional(machineConfiguration.isMachineCoordinate(1), "PB=" + abcFormat.format(abc.y)),
-      conditional(machineConfiguration.isMachineCoordinate(0), "PA=" + abcFormat.format(abc.x)),
+      conditional(machineConfiguration.isMachineCoordinate(2), "PC=" + abcFormat.format(oo88Abc.z)),
+      conditional(machineConfiguration.isMachineCoordinate(1), "PB=" + abcFormat.format(oo88Abc.y)),
+      conditional(machineConfiguration.isMachineCoordinate(0), "PA=" + abcFormat.format(oo88Abc.x)),
       "PH=" + xyzFormat.format(currentSection.workOffset),
       "PP=" + xyzFormat.format(fixtureOffsetWCS)
     );
