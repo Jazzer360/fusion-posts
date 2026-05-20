@@ -105,6 +105,21 @@ properties = {
     value      : 0,
     scope      : "post"
   },
+  // CUSTOM: emit the program as a callable subroutine. Suppresses the final M02
+  // (the controller's main M02 would end execution prematurely) and lets the
+  // program's O<number> label + closing RTS serve as the subroutine entry/exit
+  // so a separate main program can CALL it. Fusion will still write the file
+  // with the default .MIN extension because the extension is fixed at script
+  // load and Fusion does not re-read it from user property values; rename the
+  // posted file to .SSB by hand after posting.
+  outputAsSubroutine: {
+    title      : "Output as subroutine (RTS instead of M02)",
+    description: "When enabled, the program ends with RTS instead of M02 so it can be CALLed from a separate main program. The O<program> header still acts as the entry label and any subprograms are appended after RTS. NOTE: Fusion always writes the file with the .MIN extension (the extension cannot be switched from a property at run time); rename the posted file to .SSB by hand.",
+    group      : "preferences",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
   separateWordsWithSpace: {
     title      : "Separate words with space",
     description: "Adds spaces between words if 'yes' is selected.",
@@ -2777,7 +2792,13 @@ function onClose() {
   }
   // Process Manual NC commands
   executeManualNC();
-  onCommand(COMMAND_END);
+  // CUSTOM: when emitting as a subroutine, close with RTS instead of M02 so the
+  // file can be CALLed from a separate main program without ending execution.
+  if (getProperty("outputAsSubroutine")) {
+    writeBlock("RTS");
+  } else {
+    onCommand(COMMAND_END);
+  }
 
   if (subprogramsAreSupported()) {
     writeSubprograms();

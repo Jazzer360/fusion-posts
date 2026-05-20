@@ -60,6 +60,13 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - Output: `G30 P<n>` is emitted in `onClose`, after the final `writeRetract(Z)` and the optional XY-home retract, and before `setSpindleLoadMonitor(false)`. By that point spindle is stopped, coolant is off, the work plane is canceled, and Z is at retract height — so the absolute move to the secondary reference point is safe.
   - Marker comment: `// CUSTOM: optional G30 P<n>` (one site in `properties`, one in `onClose`).
 
+- **Output as subroutine (RTS instead of M02).**
+  - Property (group `preferences`):
+    - `outputAsSubroutine` (boolean, default `false`) — when on, the program ends with `RTS` instead of `M02` so it can be `CALL`ed from a separate main program. The opening `O<programName>` header doubles as the subroutine entry label; any internal subprograms appended via `writeSubprograms()` follow the closing `RTS` exactly as in the `M02` case.
+  - File extension: Fusion always writes the file with the default `.MIN` extension. The `extension` global is read once at script load and `getProperty()` does not return user-set values at module scope, so the extension cannot be flipped from a property at run time. **Rename the posted file to `.SSB` by hand after posting.**
+  - Implementation site: in `onClose`, the `onCommand(COMMAND_END)` call (which maps to `M2`) is replaced with `writeBlock("RTS")` when the property is on.
+  - Marker comment: `// CUSTOM: emit the program as a callable subroutine` (property + the `onClose` site).
+
 - **Optional `G30 P<n>` before every `M00` program stop.**
   - Property (group `homePositions`):
     - `gotoSecondaryHomeAtStop` (boolean, default `true`) — emit `G30 P<n>` immediately before each `M00`. Reuses `secondaryHomePositionNumber` for the `P` value.
