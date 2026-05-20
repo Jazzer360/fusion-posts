@@ -193,7 +193,7 @@ properties = {
     description: "The fixture offset number to use for tilted work planes when 'Tilted work plane method' is enabled.",
     group      : "multiAxis",
     type       : "integer",
-    value      : 51,
+    value      : 100,
     range      : [1, 200],
     scope      : "post"
   },
@@ -661,16 +661,16 @@ function initTombstoneRotaryWCS() {
   tombstoneRotaryCoord = -1;
   tombstoneWCSRank = {};
   tombstoneWCSCount = 0;
-  var spacing = getProperty("tombstoneRotarySpacing");
-  var initial = getProperty("tombstoneRotaryInitial") || 0;
-  if ((!spacing || spacing <= 0) && !initial) {
-    return;
-  }
   if (!machineConfiguration.isMultiAxisConfiguration()) {
     return;
   }
   // Pick the cyclic table axis (the rotary tombstone axis). Prefer V (typically C)
   // on 5-axis configs since that is the rotary table; fall back to U for single-rotary.
+  // Detected unconditionally (even when no tombstone offset properties are set) so
+  // applyTombstoneRotaryOffset() can always normalize the rotary coord modulo 2*PI -
+  // Fusion can otherwise produce two equivalent abc vectors that differ by 2*PI for
+  // operationally-identical sections, which trips the `Vector.diff(...) > 1e-4`
+  // workplane-change check in onSection and forces a spurious full retract.
   var candidates = [machineConfiguration.getAxisV(), machineConfiguration.getAxisU()];
   for (var i = 0; i < candidates.length; ++i) {
     var ax = candidates[i];
@@ -681,6 +681,10 @@ function initTombstoneRotaryWCS() {
   }
   if (tombstoneRotaryCoord < 0) {
     return;
+  }
+  var spacing = getProperty("tombstoneRotarySpacing");
+  if (!spacing || spacing <= 0) {
+    return; // axis detected (for normalization), but no per-WCS rank offset to build
   }
   // Collect unique work offsets used in the program in ascending order.
   var seen = {};
@@ -718,27 +722,38 @@ function applyTombstoneRotaryOffset(_section, abc) {
   var initial = getProperty("tombstoneRotaryInitial") || 0;
   var rankDeg = (rank != undefined && spacing > 0) ? rank * spacing : 0;
   var totalDeg = rankDeg + initial;
-  if (totalDeg == 0) {
-    return abc;
-  }
   var delta = toRad(totalDeg); // abc Vectors are in radians internally
   var v = [abc.x, abc.y, abc.z];
-  v[tombstoneRotaryCoord] += delta;
-  // Wrap into (0, 2*PI] so the rotary doesn't emit B values > 360 deg when the
-  // operation's natural angle plus the tombstone offset overflows past one
-  // revolution (e.g. natural B315 + 270 deg offset would otherwise become B585
-  // instead of B225). The (0, 2*PI] range (rather than [0, 2*PI)) is deliberate:
-  // when natural + offset sums to exactly 0 (e.g. natural B-90 + initial 90),
-  // the result is mapped to 2*PI rather than 0 so the downstream `abc.isZero()`
-  // checks in setWorkPlane / defineWorkPlane don't mistake the section for a
-  // "no rotation needed / cancel workplane" case. The 2*PI marker is collapsed
-  // back to 0 at the actual positionABC output site (in setWorkPlane).
+  var rotary = v[tombstoneRotaryCoord] + delta;
+  // Always normalize the rotary coord modulo 2*PI. Fusion can produce two
+  // equivalent abc representations for operationally-identical sections that
+  // differ by 2*PI (e.g. one section's natural rotary = -PI/2, the next's =
+  // 3*PI/2 - both physically B270). Without this normalization, the
+  // `Vector.diff(defineWorkPlane(prev), defineWorkPlane(curr)).length > 1e-4`
+  // check in onSection sees a 2*PI delta and flags a new work plane, forcing a
+  // spurious full retract / OO88 rebuild even though the rotary doesn't move.
+  //
+  // The normalization range is conditional:
+  //   - If a tombstone offset was applied (totalDeg != 0), wrap into (0, 2*PI]
+  //     so a wrap-to-zero result (e.g. natural B-90 + initial 90) becomes 2*PI
+  //     rather than 0. The 2*PI "marker" preserves abc.isNonZero() so downstream
+  //     setWorkPlane / defineWorkPlane don't mistake the offset section for a
+  //     true cancel-workplane case. The marker is collapsed back to 0 at the
+  //     actual positionABC output site in setWorkPlane.
+  //   - If no offset was applied (totalDeg == 0), wrap into [0, 2*PI) so a
+  //     genuinely-zero section (natural rotary = 0) stays zero and correctly
+  //     triggers the cancel-workplane path.
   var twoPi = Math.PI * 2;
-  var wrapped = v[tombstoneRotaryCoord] % twoPi;
-  if (wrapped <= 0) {
-    wrapped += twoPi;
+  rotary = rotary % twoPi;
+  if (rotary < 0) {
+    rotary += twoPi;
+  } else if (rotary == 0 && totalDeg != 0) {
+    rotary = twoPi; // marker - see comment above
   }
-  v[tombstoneRotaryCoord] = wrapped;
+  if (rotary == v[tombstoneRotaryCoord]) {
+    return abc; // already normalized and no offset applied; avoid allocation
+  }
+  v[tombstoneRotaryCoord] = rotary;
   return new Vector(v[0], v[1], v[2]);
 }
 
