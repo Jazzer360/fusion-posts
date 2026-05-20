@@ -157,7 +157,7 @@ properties = {
     description: "If enabled, M15/M16 are used to specify table rotation direction. This property should only be enabled when the rotary axis moves on a rotary scale (has a defined range).",
     group      : "multiAxis",
     type       : "boolean",
-    value      : false,
+    value      : true,
     scope      : "post"
   },
   tiltedWorkPlaneMethod: {
@@ -212,7 +212,7 @@ properties = {
     description: "Use G284 instead of G84 for tapping cycles.",
     group      : "preferences",
     type       : "boolean",
-    value      : false,
+    value      : true,
     scope      : "post"
   },
   useSmoothing: {
@@ -252,6 +252,18 @@ properties = {
     group      : "multiAxis",
     type       : "boolean",
     value      : false,
+    scope      : "post"
+  },
+  // CUSTOM: tombstone rotary WCS spacing - adds (rank * spacing) deg to the rotary
+  // table axis for each unique work offset in the program (useful for a multi-WCS
+  // tombstone setup where each face is at a fixed rotary index).
+  tombstoneRotarySpacing: {
+    title      : "Tombstone rotary WCS spacing (deg)",
+    description: "When non-zero, the rotary table axis is offset by (WCS rank * spacing) degrees, where WCS rank is the section's position (0-based) among all unique work offsets used in the program, sorted in ascending numeric order. Intended for a multi-WCS setup mounted on a rotary tombstone (e.g. 90 deg for a 4-sided tombstone). Validated so that (count - 1) * spacing stays below 360 deg. Set to 0 to disable.",
+    group      : "multiAxis",
+    type       : "number",
+    value      : 90,
+    range      : [0, 360],
     scope      : "post"
   },
   useCAS: {
@@ -543,7 +555,9 @@ function defineMachine() {
       var rotaryVector = [0, 0, 0];
       rotaryVector[masterAxis] = rotary / Math.abs(rotary);
       useTCP = false; // Single rotary does not use TCP mode
-      var aAxis = createAxis({coordinate:0, table:true, axis:rotaryVector, cyclic:true, range:getProperty("useTableDirectionCodes") ? [0, 359.9999] : undefined, preference:0, tcp:useTCP});
+      // CUSTOM: use masterAxis as the coordinate so a Y-rotary outputs B and a Z-rotary outputs C
+      // (upstream hard-codes coordinate:0, which forces A regardless of rotaryTableAxis selection)
+      var aAxis = createAxis({coordinate:masterAxis, table:true, axis:rotaryVector, cyclic:true, range:getProperty("useTableDirectionCodes") ? [0, 359.9999] : undefined, preference:0, tcp:useTCP});
       machineConfiguration = new MachineConfiguration(aAxis);
     }
     setMachineConfiguration(machineConfiguration);
@@ -596,6 +610,81 @@ function defineMachine() {
 }
 // End of machine configuration logic
 
+// CUSTOM: tombstone rotary WCS offset state. Populated by initTombstoneRotaryWCS()
+// in onOpen() once the machine configuration is known and all sections are visible.
+var tombstoneRotaryCoord = -1; // 0=A, 1=B, 2=C; -1 means no offset applied
+var tombstoneWCSRank = {};     // map: workOffset (numeric) -> 0-based rank
+var tombstoneWCSCount = 0;
+
+function initTombstoneRotaryWCS() {
+  tombstoneRotaryCoord = -1;
+  tombstoneWCSRank = {};
+  tombstoneWCSCount = 0;
+  var spacing = getProperty("tombstoneRotarySpacing");
+  if (!spacing || spacing <= 0) {
+    return;
+  }
+  if (!machineConfiguration.isMultiAxisConfiguration()) {
+    return;
+  }
+  // Pick the cyclic table axis (the rotary tombstone axis). Prefer V (typically C)
+  // on 5-axis configs since that is the rotary table; fall back to U for single-rotary.
+  var candidates = [machineConfiguration.getAxisV(), machineConfiguration.getAxisU()];
+  for (var i = 0; i < candidates.length; ++i) {
+    var ax = candidates[i];
+    if (ax && ax.isEnabled() && ax.isTable() && ax.isCyclic()) {
+      tombstoneRotaryCoord = ax.getCoordinate();
+      break;
+    }
+  }
+  if (tombstoneRotaryCoord < 0) {
+    return;
+  }
+  // Collect unique work offsets used in the program in ascending order.
+  var seen = {};
+  var list = [];
+  var n = getNumberOfSections();
+  for (var s = 0; s < n; ++s) {
+    var off = getSection(s).workOffset;
+    if (!seen[off]) {
+      seen[off] = true;
+      list.push(off);
+    }
+  }
+  list.sort(function (a, b) { return a - b; });
+  for (var k = 0; k < list.length; ++k) {
+    tombstoneWCSRank[list[k]] = k;
+  }
+  tombstoneWCSCount = list.length;
+  if (tombstoneWCSCount > 1 && (tombstoneWCSCount - 1) * spacing >= 360) {
+    error(subst(
+      localize("Tombstone rotary WCS spacing of %1 deg with %2 work offsets wraps past 360 deg. Reduce the spacing or the number of work offsets so that (count - 1) * spacing < 360."),
+      spacing, tombstoneWCSCount
+    ));
+  }
+}
+
+function applyTombstoneRotaryOffset(_section, abc) {
+  if (tombstoneRotaryCoord < 0 || !_section) {
+    return abc;
+  }
+  if (_section.isMultiAxis()) {
+    return abc; // simultaneous multi-axis: abc is the initial tool axis, not a WCS index
+  }
+  var rank = tombstoneWCSRank[_section.workOffset];
+  if (rank == undefined || rank == 0) {
+    return abc;
+  }
+  var spacing = getProperty("tombstoneRotarySpacing");
+  if (!spacing || spacing <= 0) {
+    return abc;
+  }
+  var delta = toRad(rank * spacing); // abc Vectors are in radians internally
+  var v = [abc.x, abc.y, abc.z];
+  v[tombstoneRotaryCoord] += delta;
+  return new Vector(v[0], v[1], v[2]);
+}
+
 function onOpen() {
   circularOutputAccuracy = xyzFormat.getNumberOfDecimals();
   // define and enable machine configuration
@@ -604,6 +693,9 @@ function onOpen() {
     defineMachine(); // hardcoded machine configuration
   }
   activateMachine(); // enable the machine optimizations and settings
+
+  // CUSTOM: build the tombstone rotary WCS rank map (after the machine is known).
+  initTombstoneRotaryWCS();
 
   if (!getProperty("useClampCodes")) {
     fourthAxisClamp.disable();
@@ -868,7 +960,7 @@ function executeManualNC(command) {
 // buffered stops sharing the same captured comment are grouped under one header.
 function flushBufferedManualNCStops() {
   var isStop = function (cmd) {
-    return cmd == COMMAND_STOP || cmd == COMMAND_OPTIONAL_STOP;
+    return cmd == COMMAND_STOP;
   };
   var lastComment;
   var lastCommentSet = false;
@@ -952,6 +1044,9 @@ function setWorkPlane(abc) {
       cancelWorkPlane();
       if (machineConfiguration.isMultiAxisConfiguration()) {
         var machineABC = abc.isNonZero() ? (currentSection.isMultiAxis() ? getCurrentDirection() : getWorkPlaneMachineABC(currentSection, false)) : abc;
+        // CUSTOM: tombstone rotary WCS offset - keep the physical rotary in sync
+        // with the offset already baked into `abc` by defineWorkPlane.
+        machineABC = applyTombstoneRotaryOffset(currentSection, machineABC);
         if (settings.workPlaneMethod.useABCPrepositioning || machineABC.isZero()) {
           positionABC(machineABC, false);
         } else {
@@ -3515,6 +3610,13 @@ function defineWorkPlane(_section, _setWorkPlane) {
     } else {
       abc = getWorkPlaneMachineABC(_section, true);
     }
+
+    // CUSTOM: tombstone rotary WCS offset - shift the rotary table axis by the
+    // section's WCS rank * spacing BEFORE the abc is dispatched to setWorkPlane /
+    // positionABC / writeFixtureOffset, so every downstream sink (including the
+    // diff check in onSection that calls defineWorkPlane(prev/curr, false)) sees
+    // the offset uniformly.
+    abc = applyTombstoneRotaryOffset(_section, abc);
 
     if (_setWorkPlane) {
       if (_section.isMultiAxis() || isPolarModeActive()) { // 4-5x simultaneous operations

@@ -88,10 +88,19 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
     - The leading `CALL O9810` protected entry move and the trailing `CALL O9810` retract — suppressed only for cycle types listed in `isRenishawProbeCycle` (so non-ported cycles still use the standard protected motion if they ever run with the property on).
   - Marker comment: `// CUSTOM: Renishaw` (property definition + `isRenishawProbeCycle` helper + each gated site).
 
+- **Tombstone rotary WCS spacing.**
+  - Property (group `multiAxis`):
+    - `tombstoneRotarySpacing` (number, default `0`, range 0-360) - degrees of rotary-axis offset per WCS step. `0` disables the feature.
+  - Behavior: when non-zero, `initTombstoneRotaryWCS()` (called from `onOpen` after `defineMachine` / `activateMachine`) scans every section, collects the unique `workOffset` values, sorts them ascending, and assigns each a 0-based rank. It also resolves the rotary table axis coordinate (0=A, 1=B, 2=C) from `machineConfiguration.getAxisV()` / `getAxisU()` - preferring the cyclic table axis (the C axis on 5-axis configs, the single rotary on 4-axis configs).
+  - At runtime, `applyTombstoneRotaryOffset(section, abc)` adds `toRad(rank * spacing)` to the rotary coordinate of the abc Vector. Applied in two places so the offset reaches every downstream sink:
+    1. Inside `defineWorkPlane(_section, _setWorkPlane)`, immediately after `abc` is computed and BEFORE the `if (_setWorkPlane)` dispatch - so `positionABC(abc, true)` (non-tilted-workplane path) and `setWorkPlane(abc) -> writeFixtureOffset(abc)` (OO88 / G605 path) both receive the offset, and the diff check in `onSection` (which calls `defineWorkPlane(prev/curr, false)`) stays consistent.
+    2. In `setWorkPlane(abc)`, immediately after the `machineABC` recomputation via `getWorkPlaneMachineABC(currentSection, false)` - so the physical rotary positioning on the tilted-workplane path tracks the offset too (`getWorkPlaneMachineABC` re-derives abc from the section workplane and would otherwise drop the offset).
+  - Skipped for `_section.isMultiAxis()` (simultaneous 5-axis): there the abc is the initial tool axis, not a WCS indexing position.
+  - Validation: if more than one unique WCS is used and `(count - 1) * spacing >= 360`, the post errors out at `onOpen` to prevent the rotary from wrapping around to a duplicate orientation. (For a 4-sided tombstone with 4 WCS and 90 deg spacing, the last offset is 270 deg < 360 - passes.)
+  - Marker comment: `// CUSTOM: tombstone rotary WCS` (property definition + helper block above `onOpen` + the two application sites).
+
 
 ---
-
-## Working Workflow
 
 1. Make changes directly to the `.cps` file in this folder.
 2. In Fusion 360 → Manufacturing → Post Process, pick the post (it shows under Personal Posts).
