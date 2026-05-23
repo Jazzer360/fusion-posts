@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>okuma.cps Post-Processor Flow</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #161a22;
+      --border: #2a313d;
+      --text: #e6e8ec;
+      --muted: #98a1b3;
+      --accent: #7fb4ff;
+      --custom: #ffb86b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 24px 32px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { margin: 0 0 6px 0; font-size: 22px; }
+    header p { margin: 0; color: var(--muted); font-size: 14px; }
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px 32px 64px;
+    }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      padding: 12px 0 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+    nav a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 14px;
+    }
+    nav a:hover { text-decoration: underline; }
+    section {
+      margin: 0 0 48px;
+      padding: 20px 24px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    section h2 {
+      margin: 0 0 8px 0;
+      font-size: 18px;
+    }
+    section p { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+    section .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    section .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    section .legend i {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 2px;
+    }
+    .swatch-engine  { background: #6b8eff; }
+    .swatch-post    { background: #5bc28a; }
+    .swatch-custom  { background: var(--custom); }
+    .swatch-buffer  { background: #c378ff; }
+    .swatch-output  { background: #9aa3b3; }
+    code, .mono {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      background: #0b0d12;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 12.5px;
+    }
+    .mermaid {
+      background: #11151c;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      overflow-x: auto;
+      display: flex;
+      justify-content: center;
+    }
+    .mermaid svg { max-width: 100%; height: auto; }
+    details {
+      margin-top: 12px;
+      font-size: 13px;
+    }
+    details summary {
+      cursor: pointer;
+      color: var(--muted);
+    }
+    details ul { margin: 8px 0 0 18px; padding: 0; }
+    details li { margin: 4px 0; }
+    .pill {
+      display: inline-block;
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      background: rgba(255, 184, 107, 0.15);
+      color: var(--custom);
+      border: 1px solid rgba(255, 184, 107, 0.4);
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>okuma.cps — Post-Processor Flow</h1>
+    <p>How Fusion 360's post engine drives this post, and what each handler does. Orange = our customizations.</p>
+  </header>
+
+  <main>
+    <nav>
+      <a href="#lifecycle">1. Program lifecycle</a>
+      <a href="#section">2. onSection</a>
+      <a href="#sectionend">3. onSectionEnd</a>
+      <a href="#manualnc">4. Manual NC buffering</a>
+      <a href="#close">5. onClose</a>
+      <a href="#cycle">6. Probing cycle dispatch</a>
+      <a href="#tombstone">7. Tombstone rotary offset</a>
+    </nav>
+
+    <section id="lifecycle">
+      <h2>1. Program lifecycle <span class="pill">overview</span></h2>
+      <p>
+        Fusion's CAM engine walks the setup tree top-to-bottom, calling these handlers in order. Each toolpath operation becomes one <code>onSection</code> / <code>onSectionEnd</code> pair, and the motion within it is delivered as <code>onRapid</code> / <code>onLinear</code> / <code>onCircular</code> calls. Manual NC operations interleave as <code>onManualNC</code> calls between sections.
+      </p>
+      <div class="legend">
+        <span><i class="swatch-engine"></i> Engine call (Fusion)</span>
+        <span><i class="swatch-post"></i> Post handler</span>
+        <span><i class="swatch-custom"></i> Customization</span>
+      </div>
+      <div class="mermaid">
+flowchart TD
+    Start([Fusion starts posting]) --> Open[onOpen]
+    Open --> OpenWork["• load properties<br/>• defineMachine / activateMachine<br/>• <b>initTombstoneRotaryWCS</b> (resolves rotary axis,<br/>  computes per-WCS rank)<br/>• write program header (O&lt;num&gt;, comments)"]
+    OpenWork --> Param[onParameter / onPassThrough / etc.]
+    Param --> Loop{More items in<br/>setup tree?}
+    Loop -- "toolpath op" --> Section[onSection]
+    Loop -- "Manual NC op" --> Manual[onManualNC]
+    Loop -- no --> Close[onClose]
+    Section --> Motion["onRapid / onLinear /<br/>onCircular / onCycle"]
+    Motion --> SectionEnd[onSectionEnd]
+    SectionEnd --> Loop
+    Manual --> Loop
+    Close --> Done([Posted file written])
+
+    classDef engine fill:#dfe7ff,stroke:#6b8eff,color:#1a2440;
+    classDef post fill:#ddf5e6,stroke:#5bc28a,color:#0e2818;
+    classDef custom fill:#ffe5c2,stroke:#ff9d3d,color:#3a2200;
+    class Start,Loop,Param,Motion,Done engine
+    class Open,Section,SectionEnd,Close,Manual post
+    class OpenWork custom
+      </div>
+    </section>
+
+    <section id="section">
+      <h2>2. onSection — wrap-up + new-section setup</h2>
+      <p>
+        This is the busiest handler. It detects whether a tool change / new WCS / new workplane is needed, runs the <em>previous</em> section's wrap-up if so, then writes the new section's preamble. The Manual NC drain runs between those two stages, which is why a Manual NC ends up between operations rather than mid-block.
+      </p>
+      <div class="mermaid">
+flowchart TD
+    Enter([onSection called]) --> Detect{"insertToolCall ||<br/>newWorkOffset ||<br/>newWorkPlane ||<br/>multi-axis ||<br/>smoothing.cancel ||<br/>tcp active?"}
+    Detect -- no --> FlushNC
+    Detect -- yes --> WrapUp["<b>Wrap up previous section</b><br/>• COMMAND_COOLANT_OFF<br/>• COMMAND_STOP_SPINDLE<br/>• cancelWorkPlane()<br/>• writeRetract(Z)<br/>• disableLengthCompensation()<br/>• setCAS(true)<br/>• if isFirstSection:<br/>  cancelWorkPlane, positionABC(getTombstoneOpeningABC())"]
+    WrapUp --> FlushNC["<b>executeManualNC()</b><br/>(drains EVERY buffered Manual NC<br/>as its own labeled block)"]
+    FlushNC --> Header["writeln('') + writeComment(operation-comment)<br/>+ optional writeSectionNotes()"]
+    Header --> Tool["writeToolCall(tool, insertToolCall)<br/>startSpindle(tool, insertToolCall)<br/>setSpindleLoadMonitor(true, ...)<br/>initializeParametricFeeds(...)"]
+    Tool --> Probe{isProbeOperation?}
+    Probe -- yes --> ProbeOn["writeBlock(CALL O9832)<br/><i>skipped if useRenishawProbing</i>"]
+    Probe -- no --> Coolant
+    ProbeOn --> Coolant[setCoolant for tool/wcs]
+    Coolant --> WCS["writeWCS(currentSection)<br/>(writes G15 H&lt;workOffset&gt;)"]
+    WCS --> WorkPlane["defineWorkPlane(currentSection, true)<br/>→ setWorkPlane(abc)<br/>→ writeFixtureOffset(abc) [CALL OO88]<br/><i>skipped for probe ops</i>"]
+    WorkPlane --> Initial["compute initialPosition<br/>writeInitialPositioning(...)"]
+    Initial --> Sub{subprogramsAreSupported?}
+    Sub -- yes --> SubDef["subprogramDefine(initialPosition, abc)<br/>(may start redirection)"]
+    Sub -- no --> Exit
+    SubDef --> Exit([return — Fusion now sends<br/>motion via onRapid/onLinear/etc.])
+
+    classDef engine fill:#dfe7ff,stroke:#6b8eff,color:#1a2440;
+    classDef post fill:#ddf5e6,stroke:#5bc28a,color:#0e2818;
+    classDef custom fill:#ffe5c2,stroke:#ff9d3d,color:#3a2200;
+    class Enter,Detect,Probe,Sub,Exit engine
+    class WrapUp,Header,Tool,ProbeOn,Coolant,WCS,WorkPlane,Initial,SubDef post
+    class FlushNC custom
+      </div>
+      <details>
+        <summary>Why is the wrap-up of section N done in section N+1's onSection?</summary>
+        <ul>
+          <li>Fusion's API gives <code>onSectionEnd</code> very little context — at that point the engine doesn't yet know whether the next section will need a tool change, a new WCS, or even exist. Putting the wrap-up here keeps decisions like "do we cancel the work plane?" / "do we retract Z?" / "do we shut the spindle off?" deferred until we can see both sides.</li>
+          <li>That's also why the Manual NC drain has to run in <code>onSection</code>: it must wait for the previous section's wrap-up to finish, so the Manual NC block lands cleanly between operations.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section id="sectionend">
+      <h2>3. onSectionEnd — minimal cleanup</h2>
+      <p>Runs right after the last motion of a section. Notably small — most of what looks like "end of operation" output is actually emitted at the start of the next <code>onSection</code> (see #2).</p>
+      <div class="mermaid">
+flowchart TD
+    A([onSectionEnd called]) --> S{subprogramsAreSupported?}
+    S -- yes --> SE[subprogramEnd]
+    S -- no --> MA
+    SE --> MA{currentSection.isMultiAxis?}
+    MA -- yes --> G94[writeBlock G94 — feed per minute]
+    MA -- no --> Next
+    G94 --> Next
+    Next --> NL{Not last section?}
+    NL -- yes --> CoolantPeek["if next tool's coolant differs:<br/>setCoolant(COOLANT_OFF)"]
+    NL -- no --> TCP
+    CoolantPeek --> BC{"tool.breakControl &&<br/>next section needs tool change?"}
+    BC -- yes --> Bcc["onCommand(COMMAND_BREAK_CONTROL)<br/><i>currently a no-op — stubbed</i>"]
+    BC -- no --> TCP
+    Bcc --> TCP
+    TCP --> TPOC{tcp.isSupportedByOperation?}
+    TPOC -- yes --> G444["writeBlock G444 if useTPOC"]
+    TPOC -- no --> LM
+    G444 --> LM[loadMonitorVal = getProperty]
+    LM --> PR{isProbeOperation?}
+    PR -- yes --> POff["writeBlock(CALL O9833) — probe spin off<br/><i>skipped if useRenishawProbing</i><br/>setProbeAngle() if needed"]
+    PR -- no --> Done
+    POff --> Done([forceAny; reset rotary direction])
+
+    classDef engine fill:#dfe7ff,stroke:#6b8eff,color:#1a2440;
+    classDef post fill:#ddf5e6,stroke:#5bc28a,color:#0e2818;
+    classDef custom fill:#ffe5c2,stroke:#ff9d3d,color:#3a2200;
+    class A,S,MA,NL,BC,TCP,TPOC,PR,Done engine
+    class SE,G94,CoolantPeek,Bcc,G444,LM,POff post
+      </div>
+    </section>
+
+    <section id="manualnc">
+      <h2>4. Manual NC buffering &amp; drain <span class="pill">customization</span></h2>
+      <p>
+        Fusion fires <code>onManualNC</code> in the natural order Manual NC operations appear in the setup tree — between <code>onSectionEnd(prev)</code> and <code>onSection(next)</code>. The stock post would <code>expandManualNC()</code> immediately, which lands the output mid-wrap-up of the previous section. Instead we buffer (almost) everything and drain at the right moment.
+      </p>
+      <div class="legend">
+        <span><i class="swatch-buffer"></i> Buffer</span>
+        <span><i class="swatch-custom"></i> Customization</span>
+        <span><i class="swatch-output"></i> NC file output</span>
+      </div>
+      <div class="mermaid">
+flowchart TD
+    subgraph FE [Fusion]
+      F1([Manual NC op])
+    end
+    F1 --> OMN[onManualNC]
+    OMN --> Action{"command ==<br/>COMMAND_ACTION?"}
+    Action -- yes --> Inline["handle inline<br/>(e.g. parse 'SpindleLoadMonitor:N'<br/>and store loadMonitorVal)<br/><i>no NC emitted</i>"]
+    Action -- no --> Push["push entry onto<br/><b>manualNC[]</b> buffer<br/>(captures command, value,<br/>and operation-comment)"]
+    Push --> Buf[("manualNC buffer")]
+
+    Buf -. drained by .-> Drain[executeManualNC]
+    Drain --> Loop["for each buffered item:"]
+    Loop --> Group{"same command type<br/>+ same op-comment as prev?"}
+    Group -- yes --> Expand["expandManualNC(cmd, value)<br/>(engine routes to onComment /<br/>onCommand / writeBlock / ...)"]
+    Group -- no --> NL[writeln '']
+    NL --> CL{"comment-like?<br/>(DISPLAY_MESSAGE /<br/>PRINT_MESSAGE / COMMENT)"}
+    CL -- yes --> Expand
+    CL -- no --> H1["writeComment('Manual NC: ' + typeLabel)"]
+    H1 --> H2{"op-comment<br/>non-empty?"}
+    H2 -- yes --> WC["writeComment(op-comment)"]
+    H2 -- no --> Expand
+    WC --> Expand
+    Expand --> Out[/NC file/]
+
+    classDef engine fill:#dfe7ff,stroke:#6b8eff,color:#1a2440;
+    classDef post fill:#ddf5e6,stroke:#5bc28a,color:#0e2818;
+    classDef custom fill:#ffe5c2,stroke:#ff9d3d,color:#3a2200;
+    classDef buffer fill:#ead2ff,stroke:#c378ff,color:#2a0f3d;
+    classDef output fill:#dde2ea,stroke:#9aa3b3,color:#1f242c;
+    class F1,OMN,Action,Loop,Group,CL,H2 engine
+    class Inline,Expand post
+    class Push,Drain,NL,H1,WC custom
+    class Buf buffer
+    class Out output
+      </div>
+      <details>
+        <summary>Where does the drain actually run?</summary>
+        <ul>
+          <li><b>Between sections</b> — in <code>onSection</code>, immediately after the previous section's wrap-up and before the new section's <code>(operation-comment)</code> header.</li>
+          <li><b>End of program</b> — in <code>onClose</code>, after the final retract / chip-conveyor block and before <code>M02</code> / <code>RTS</code>. Catches anything queued after the last machining section.</li>
+        </ul>
+      </details>
+      <details>
+        <summary>What does a flushed block look like in the NC file?</summary>
+        <ul>
+          <li>For most types:<br/><code>&nbsp;</code><br/><code>(Manual NC: Optional Stop)</code><br/><code>(Drill1 3)</code> &larr; only if the Manual NC op has a name<br/><code>N70 M01</code></li>
+          <li>For comment-like types (no type-label header, no op-comment header — the content IS the comment):<br/><code>&nbsp;</code><br/><code>(This is the comment text)</code></li>
+          <li>Multi-line text: <code>writeComment</code> splits on real newlines AND the literal two-character sequence <code>\n</code>, so each line becomes its own <code>(...)</code>.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section id="close">
+      <h2>5. onClose — program end</h2>
+      <p>Wraps up the last section, then writes the program-end block. The final Manual NC drain happens here so any Manual NC after the last toolpath still lands in the right place.</p>
+      <div class="mermaid">
+flowchart TD
+    A([onClose]) --> Insp{inspectionVariables?}
+    Insp -- yes --> IE[inspection wrap-up]
+    Insp -- no --> Mist
+    IE --> Mist
+    Mist[disable mist/coolant] --> Spin[stop spindle / orient]
+    Spin --> Plane{tilted workplane active?}
+    Plane -- yes --> Cancel[setWorkPlane 0,0,0 — cancel]
+    Plane -- no --> Retract
+    Cancel --> Retract[writeRetract Z]
+    Retract --> HomeXY{retract.homeXY.onProgramEnd?}
+    HomeXY -- yes --> HXY[writeRetract home XY]
+    HomeXY -- no --> G30
+    HXY --> G30
+    G30{gotoSecondaryHomeAtEnd?} -- yes --> G30W["writeBlock G30 P&lt;n&gt;"]
+    G30 -- no --> SLM
+    G30W --> SLM
+    SLM[setSpindleLoadMonitor false] --> TLF{toolLifeMonitor?}
+    TLF -- yes --> TLFOFF[writeBlock TLFOFF]
+    TLF -- no --> InspEnd
+    TLFOFF --> InspEnd
+    InspEnd[inspectionProcessSectionEnd if defined] --> Chip{useChipConveyor?}
+    Chip -- yes --> M278[writeBlock M278]
+    Chip -- no --> FinalNC
+    M278 --> FinalNC
+    FinalNC[<b>executeManualNC</b> — drain remaining<br/>Manual NCs as labeled blocks] --> Sub{outputAsSubroutine?}
+    Sub -- yes --> RTS["writeBlock('RTS')"]
+    Sub -- no --> M02["onCommand(COMMAND_END) → M02"]
+    RTS --> SubProgs
+    M02 --> SubProgs
+    SubProgs{subprogramsAreSupported?} -- yes --> WSP[writeSubprograms — emit collected subprogram bodies]
+    SubProgs -- no --> Tcheck
+    WSP --> Tcheck
+    Tcheck[writeToolCheckEnd] --> Done([file written])
+
+    classDef engine fill:#dfe7ff,stroke:#6b8eff,color:#1a2440;
+    classDef post fill:#ddf5e6,stroke:#5bc28a,color:#0e2818;
+    classDef custom fill:#ffe5c2,stroke:#ff9d3d,color:#3a2200;
+    class A,Insp,Plane,HomeXY,G30,TLF,Chip,Sub,SubProgs,Done engine
+    class IE,Mist,Spin,Cancel,Retract,HXY,SLM,TLFOFF,InspEnd,M278,M02,WSP,Tcheck post
+    class G30W,FinalNC,RTS custom
+      </div>
+    </section>
+
+    <section id="cycle">
+      <h2>6. Probing cycle dispatch <span class="pill">customization</span></h2>
+      <p>How <code>onCyclePoint(x, y, z)</code> picks between the stock Autodesk probe macros and our Renishaw <code>O9901</code> calls when <code>useRenishawProbing</code> is on.</p>
+      <div class="mermaid">
+flowchart TD
+    A[onCyclePoint x,y,z] --> Probe{isProbeOperation?}
+    Probe -- no --> Std[stock cycle expansion<br/>drilling / tapping / etc.]
+    Probe -- yes --> Renish{useRenishawProbing?}
+    Renish -- no --> StdProbe[stock O98xx probe macros<br/>O9810 entry → O98xx measure → O9810 exit]
+    Renish -- yes --> Which{isRenishawProbeCycle<br/>cycle type?}
+    Which -- no --> StdProbe
+    Which -- yes --> Pick{cycleType?}
+    Pick -- xy-rectangular-boss --> R11[CALL O9901 PM=11<br/>PD/PE/PW/PS]
+    Pick -- xy-circular-boss --> R3[CALL O9901 PM=3<br/>PD/PW/PS]
+    Pick -- xy-circular-hole --> R2[CALL O9901 PM=2<br/>PD/PS]
+    Pick -- x-channel / y-channel --> R4[CALL O9901 PM=4<br/>PA=1 or 2 / PD/PS]
+    Pick -- x-wall / y-wall --> R5[CALL O9901 PM=5<br/>PA=1 or 2 / PD/PW/PS]
+    Pick -- x / y --> R1xy[CALL O9901 PM=1<br/>PA=±1 or ±2 / PS]
+    Pick -- z --> R1z[CALL O9901 PM=1<br/>PA=-3 / PS]
+
+    classDef engine fill:#dfe7ff,stroke:#6b8eff,color:#1a2440;
+    classDef post fill:#ddf5e6,stroke:#5bc28a,color:#0e2818;
+    classDef custom fill:#ffe5c2,stroke:#ff9d3d,color:#3a2200;
+    class A,Probe,Renish,Which,Pick engine
+    class Std,StdProbe post
+    class R11,R3,R2,R4,R5,R1xy,R1z custom
+      </div>
+    </section>
+
+    <section id="tombstone">
+      <h2>7. Tombstone rotary offset <span class="pill">customization</span></h2>
+      <p>How a multi-WCS tombstone setup gets its per-WCS rotary offset applied without breaking Fusion's section-boundary detection or the controller's <code>OO88</code> WCS recalculation.</p>
+      <div class="mermaid">
+flowchart TD
+    O[onOpen] --> Init["initTombstoneRotaryWCS<br/>• resolve rotary table axis (A/B/C)<br/>• if spacing &gt; 0: collect unique workOffsets, assign 0-based rank<br/>• validate (count-1)*spacing &lt; 360"]
+    Init --> Loop[per-section flow]
+
+    Loop --> DWP[defineWorkPlane abc, setWP]
+    DWP --> Apply["<b>applyTombstoneRotaryOffset</b><br/>abc.rotary += toRad(rank*spacing + initial)<br/>normalize:<br/>• if offset applied → wrap into (0, 2π]<br/>• if no offset → wrap into [0, 2π)"]
+    Apply --> Branch{setWorkPlane?}
+    Branch -- no --> DiffOnly["return abc<br/>(used by onSection diff check —<br/>same wrap so spurious 2π deltas don't<br/>fire a false 'new workplane')"]
+    Branch -- yes --> Dispatch{tilted workplane?}
+    Dispatch -- no --> PosABC["positionABC(abc, true)<br/>(emits B angle directly)"]
+    Dispatch -- yes --> SWP[setWorkPlane abc]
+    SWP --> RecABC["getWorkPlaneMachineABC re-derives abc<br/>→ <b>applyTombstoneRotaryOffset</b> again<br/>(re-derivation drops the offset, so reapply)"]
+    RecABC --> WFO["writeFixtureOffset(abc)<br/>→ CALL OO88 PX/PY/PZ PA/PB/PC PH/PP"]
+    WFO --> OO88Adj["<b>OO88 adjustment</b><br/>subtract toRad(rank*spacing + initial)<br/>from PA/PB/PC so the controller's<br/>'WCS was probed at 0°' assumption holds"]
+    OO88Adj --> ProbeSkip{isProbeOperation?}
+    ProbeSkip -- yes --> SkipOO88["skip CALL OO88<br/>(probe runs with tombstone at WCS home,<br/>WCS is already in un-rotated frame)"]
+    ProbeSkip -- no --> Emit[emit CALL OO88 block]
+
+    classDef engine fill:#dfe7ff,stroke:#6b8eff,color:#1a2440;
+    classDef post fill:#ddf5e6,stroke:#5bc28a,color:#0e2818;
+    classDef custom fill:#ffe5c2,stroke:#ff9d3d,color:#3a2200;
+    class O,Loop,DWP,Branch,Dispatch,SWP,ProbeSkip engine
+    class PosABC,RecABC,WFO,Emit post
+    class Init,Apply,DiffOnly,OO88Adj,SkipOO88 custom
+      </div>
+    </section>
+  </main>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "dark",
+      flowchart: {
+        curve: "basis",
+        htmlLabels: true,
+        useMaxWidth: true,
+        nodeSpacing: 30,
+        rankSpacing: 35,
+        padding: 6
+      },
+      themeVariables: {
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        fontSize: "12px",
+        darkMode: true,
+        background: "#11151c",
+        primaryColor: "#1d2330",
+        primaryTextColor: "#e6e8ec",
+        primaryBorderColor: "#3a4254",
+        lineColor: "#7a8398",
+        secondaryColor: "#2a313d",
+        tertiaryColor: "#161a22"
+      }
+    });
+  </script>
+</body>
+</html>

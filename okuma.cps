@@ -893,9 +893,11 @@ function onSection() {
     }
   }
 
-  // CUSTOM: flush buffered Manual NC stops in their own labeled section, before
-  // the new operation's comment header is written.
-  flushBufferedManualNCStops();
+  // CUSTOM: flush every buffered Manual NC as its own labeled block (blank line +
+  // (operation-comment) header + expanded content), after the previous section's
+  // wrap-up and before this section's own header. Same shape a real toolpath
+  // section uses, so Manual NC operations look visually identical in the output.
+  executeManualNC();
 
   writeln("");
   writeComment(getParameter("operation-comment", ""));
@@ -903,9 +905,6 @@ function onSection() {
   if (getProperty("showNotes") && hasParameter("notes")) {
     writeSectionNotes();
   }
-
-  // Process Pass Through commands
-  executeManualNC();
 
   // tool change
   writeToolCall(tool, insertToolCall);
@@ -987,100 +986,108 @@ function onSection() {
 /**
  Buffer Manual NC commands for processing later
 */
-var bufferPassThrough = true; // enable to output the Pass Through commands until after ending the previous section
 var manualNC = [];
 function onManualNC(command, value) {
-  switch (command) {
-  case COMMAND_ACTION:
-    var sText1 = String(value);
-    var sText2 = new Array();
-    sText2 = sText1.split(":");
-    if (sText2.length != 2) {
+  // COMMAND_ACTION carries side-effect-only payloads (e.g. SpindleLoadMonitor)
+  // that don't emit any NC output; handle inline and don't buffer.
+  if (command == COMMAND_ACTION) {
+    var parts = String(value).split(":");
+    if (parts.length != 2) {
       error(localize("Invalid action command: ") + value);
     }
-    if (sText2[0].toUpperCase() == "SPINDLELOADMONITOR") {
-      loadMonitorVal = parseFloat(sText2[1]);
+    if (parts[0].toUpperCase() == "SPINDLELOADMONITOR") {
+      loadMonitorVal = parseFloat(parts[1]);
       if (isNaN(loadMonitorVal) || loadMonitorVal < 0) {
         error(localize("Spindle load mointoring requires a valid positive number."));
       }
     }
-    break;
-  case COMMAND_PASS_THROUGH:
-    if (command == COMMAND_PASS_THROUGH && bufferPassThrough) {
-      manualNC.push({command:command, value:value});
-    } else {
-      expandManualNC(command, value);
-    }
-    break;
-  // CUSTOM: buffer program stops so they fire after the previous section's full
-  // retract/spindle-stop wrap-up, not in the middle of it. They are executed by
-  // flushBufferedManualNCStops() at the start of the next section, after
-  // writeRetract(Z) and disableLengthCompensation() but before the new tool call.
-  // The operation comment is captured here so the flush can emit a (Manual NC) header.
-  case COMMAND_STOP:
-  case COMMAND_OPTIONAL_STOP:
-    manualNC.push({
-      command: command,
-      value  : value,
-      comment: hasParameter("operation-comment") ? getParameter("operation-comment") : "Manual NC Stop"
-    });
-    break;
-  default:
-    expandManualNC(command, value);
+    return;
   }
+  // CUSTOM: buffer every visible Manual NC so it can be emitted by
+  // executeManualNC() as its own labeled block (blank line + (operation-comment)
+  // header + expanded content) between sections, the same way a real toolpath
+  // section is visually delimited. Buffering also keeps the block from landing
+  // mid-wrap-up of the previous section (between coolant-off and spindle-stop,
+  // or between writeRetract and the new tool call).
+  manualNC.push({
+    command: command,
+    value  : value,
+    comment: hasParameter("operation-comment") ? getParameter("operation-comment") : ""
+  });
 }
 
 /**
- Processes the Manual NC commands
- Pass the desired command to process or leave argument list blank to process all buffered commands
+ CUSTOM: Drain the buffered Manual NC commands. Each buffered command is emitted
+ as its own section-style block: a blank line, a synthetic
+ (Manual NC: <Type>) header (so the block stands out and the Manual NC type is
+ obvious even when Fusion supplies no operation name), then optionally a
+ (<operation-comment>) line if one was captured, then the expanded NC content.
+ For comment-like commands (DISPLAY_MESSAGE / PRINT_MESSAGE / COMMENT) the
+ headers are skipped, since the command's own output IS a comment.
+ Consecutive buffered items sharing the same command type AND same captured
+ operation-comment are grouped under one header (e.g. a multi-line
+ Pass Through, which Fusion delivers as several COMMAND_PASS_THROUGH calls).
+ Items are removed from the buffer as they're drained. Pass a specific command
+ to drain only that command type; otherwise everything buffered is drained.
 */
 function executeManualNC(command) {
+  var lastCmd;
+  var lastComment;
+  var lastSet = false;
   for (var i = 0; i < manualNC.length; ++i) {
-    if (!command || (command == manualNC[i].command)) {
-      expandManualNC(manualNC[i].command, manualNC[i].value);
+    var item = manualNC[i];
+    if (command && command != item.command) {
+      continue;
     }
+    var sameGroup = lastSet && lastCmd == item.command && lastComment === item.comment;
+    if (!sameGroup) {
+      writeln("");
+      if (!isManualNCCommentLike(item.command)) {
+        writeComment("Manual NC: " + manualNCTypeLabel(item.command));
+        if (item.comment) {
+          writeComment(item.comment);
+        }
+      }
+      lastCmd = item.command;
+      lastComment = item.comment;
+      lastSet = true;
+    }
+    expandManualNC(item.command, item.value);
   }
-  for (var i = manualNC.length - 1; i >= 0; --i) {
-    if (!command || (command == manualNC[i].command)) {
-      manualNC.splice(i, 1);
+  for (var j = manualNC.length - 1; j >= 0; --j) {
+    if (!command || command == manualNC[j].command) {
+      manualNC.splice(j, 1);
     }
   }
 }
 
-// CUSTOM: flush buffered Manual NC stops (M00 / M01) in their own labeled section
-// between operations. Emits a blank line + (operation-comment) header, then the
-// stop commands themselves (which include any injected G30 P<n>). Consecutive
-// buffered stops sharing the same captured comment are grouped under one header.
-function flushBufferedManualNCStops() {
-  var isStop = function (cmd) {
-    return cmd == COMMAND_STOP;
-  };
-  var lastComment;
-  var lastCommentSet = false;
-  var flushed = false;
-  for (var i = 0; i < manualNC.length; ++i) {
-    if (!isStop(manualNC[i].command)) {
-      continue;
-    }
-    var c = manualNC[i].comment;
-    if (!lastCommentSet || c !== lastComment) {
-      writeln("");
-      if (c) {
-        writeComment(c);
-      }
-      lastComment = c;
-      lastCommentSet = true;
-    }
-    expandManualNC(manualNC[i].command, manualNC[i].value);
-    flushed = true;
+// CUSTOM: pretty type label for the Manual NC header, derived from the engine's
+// command string id (e.g. "COMMAND_OPTIONAL_STOP" -> "Optional Stop"). Falls
+// back to "Unknown" if the engine doesn't recognize the command.
+function manualNCTypeLabel(command) {
+  var id = getCommandStringId(command);
+  if (!id) {
+    return "Unknown";
   }
-  if (flushed) {
-    for (var j = manualNC.length - 1; j >= 0; --j) {
-      if (isStop(manualNC[j].command)) {
-        manualNC.splice(j, 1);
-      }
+  if (String(id).indexOf("COMMAND_") == 0) {
+    id = String(id).substring(8);
+  }
+  var parts = String(id).split("_");
+  for (var i = 0; i < parts.length; ++i) {
+    if (parts[i].length > 0) {
+      parts[i] = parts[i].charAt(0) + parts[i].substring(1).toLowerCase();
     }
   }
+  return parts.join(" ");
+}
+
+// CUSTOM: command ids whose own expanded output is already a comment block, so
+// prepending our own "(Manual NC: ...)" header would just be visual noise.
+function isManualNCCommentLike(command) {
+  var id = getCommandStringId(command);
+  return id == "COMMAND_DISPLAY_MESSAGE" ||
+         id == "COMMAND_PRINT_MESSAGE" ||
+         id == "COMMAND_COMMENT";
 }
 
 var gRotationModal = createOutputVariable({
@@ -3378,7 +3385,11 @@ function writeComment(text) {
   if (!text) {
     return;
   }
-  var comments = String(text).split(/\r?\n/);
+  // CUSTOM: also treat the literal two-character sequence \n as a line break, so
+  // multi-line comments authored in Fusion's single-line Manual NC "Comment"
+  // field (which has no way to enter a real newline) can still wrap onto
+  // multiple (...) lines in the output.
+  var comments = String(text).replace(/\\n/g, "\n").split(/\r?\n/);
   for (comment in comments) {
     var _comment = formatComment(comments[comment]);
     if (_comment) {
