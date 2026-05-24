@@ -50,109 +50,66 @@ highFeedMapping = HIGH_FEED_NO_MAPPING; // must be set if axes are not synchroni
 highFeedrate = (unit == MM) ? 5000 : 200;
 probeMultipleFeatures = true;
 
+// CUSTOM: post property groups with display titles, descriptions, and ordering.
+// Without this block, Fusion falls back to alphabetical groups labeled by the
+// raw key (e.g. "homePositions", "multiAxis") rather than the readable titles
+// here. If the running Fusion version doesn't honor groupDefinitions, the
+// properties still work -- only the sidebar grouping is affected.
+groupDefinitions = {
+  machine: {
+    title      : "Machine Configuration",
+    description: "Physical capabilities of the machine: rotary table axis, chip conveyor. Usually set once per machine.",
+    order      : 0
+  },
+  homePositions: {
+    title      : "Home & Retract Positions",
+    description: "Retract method, XY-home behavior on indexing, and secondary-home (G30 P<n>) options for program stops and program end.",
+    order      : 1
+  },
+  tool: {
+    title      : "Tool & Spindle",
+    description: "Tool change behavior, length/diameter offset codes, tool-life and spindle-load monitoring, and spindle-stop dwell.",
+    order      : 2
+  },
+  cycles: {
+    title      : "Cycles & Smoothing",
+    description: "Tapping cycle selection and High-Cut / superNURBS contouring smoothing.",
+    order      : 3
+  },
+  multiAxis: {
+    title      : "Multi-Axis",
+    description: "Tilted work plane method, rotary direction/clamp codes, multi-axis indexing, and 5-axis controls (CAS, TPOC, ball-end-mill center).",
+    order      : 4
+  },
+  tombstone: {
+    title      : "Tombstone & Pattern Reuse",
+    description: "Rotary-tombstone WCS spacing/offset and multi-WCS pattern subprogram reuse.",
+    order      : 5
+  },
+  probing: {
+    title      : "Probing",
+    description: "Probing macro selection (Renishaw O9901 vs stock Okuma) and inspection results-file behavior.",
+    order      : 6
+  },
+  programBehavior: {
+    title      : "Program Behavior",
+    description: "Optional stops and subroutine-style program output.",
+    order      : 7
+  },
+  output: {
+    title      : "Program Output & Formatting",
+    description: "Sequence numbers, word spacing, and operation notes.",
+    order      : 8
+  }
+};
+
 // user-defined properties
 properties = {
-  preloadTool: {
-    title      : "Preload tool",
-    description: "Preloads the next tool at a tool change (if any).",
-    group      : "preferences",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  showSequenceNumbers: {
-    title      : "Use sequence numbers",
-    description: "'Yes' outputs sequence numbers on each block, 'Only on tool change' outputs sequence numbers on tool change blocks only, and 'No' disables the output of sequence numbers.",
-    group      : "formats",
-    type       : "enum",
-    values     : [
-      {title:"Yes", id:"true"},
-      {title:"No", id:"false"},
-      {title:"Only on tool change", id:"toolChange"}
-    ],
-    value: "true",
-    scope: "post"
-  },
-  sequenceNumberStart: {
-    title      : "Start sequence number",
-    description: "The number at which to start the sequence numbers.",
-    group      : "formats",
-    type       : "integer",
-    value      : 1,
-    scope      : "post"
-  },
-  sequenceNumberIncrement: {
-    title      : "Sequence number increment",
-    description: "The amount by which the sequence number is incremented by in each block.",
-    group      : "formats",
-    type       : "integer",
-    value      : 1,
-    scope      : "post"
-  },
-  optionalStop: {
-    title      : "Optional stop",
-    description: "Outputs optional stop code during when necessary in the code.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  dwellAfterStop: {
-    title      : "Dwell time after stop",
-    description: "Specifies the time in seconds to dwell after a stop.",
-    group      : "preferences",
-    type       : "number",
-    value      : 0,
-    scope      : "post"
-  },
-  // CUSTOM: emit the program as a callable subroutine. Suppresses the final M02
-  // (the controller's main M02 would end execution prematurely) and lets the
-  // program's O<number> label + closing RTS serve as the subroutine entry/exit
-  // so a separate main program can CALL it. Fusion will still write the file
-  // with the default .MIN extension because the extension is fixed at script
-  // load and Fusion does not re-read it from user property values; rename the
-  // posted file to .SSB by hand after posting.
-  outputAsSubroutine: {
-    title      : "Output as subroutine (RTS instead of M02)",
-    description: "When enabled, the program ends with RTS instead of M02 so it can be CALLed from a separate main program. The O<program> header still acts as the entry label and any subprograms are appended after RTS. NOTE: Fusion always writes the file with the .MIN extension (the extension cannot be switched from a property at run time); rename the posted file to .SSB by hand.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  separateWordsWithSpace: {
-    title      : "Separate words with space",
-    description: "Adds spaces between words if 'yes' is selected.",
-    group      : "formats",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  showNotes: {
-    title      : "Show notes",
-    description: "Writes operation notes as comments in the outputted code.",
-    group      : "formats",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  safePositionMethod: {
-    title      : "Safe Retracts",
-    description: "Select your desired retract option. 'Clearance Height' retracts to the operation clearance height.",
-    group      : "homePositions",
-    type       : "enum",
-    values     : [
-      {title:"Clearance Height", id:"clearanceHeight"},
-      {title:"G16", id:"G16"},
-      {title:"G0", id:"G0"}
-    ],
-    value: "G0",
-    scope: "post"
-  },
+  // ---- Machine Configuration ----
   rotaryTableAxis: {
     title      : "Rotary table axis",
     description: "Select rotary table axis. Check the table direction on the machine and use the (Reversed) selection if the table is moving in the opposite direction.",
-    group      : "configuration",
+    group      : "machine",
     type       : "enum",
     values     : [
       {title:"No rotary", id:"none"},
@@ -167,6 +124,154 @@ properties = {
     value: "none",
     scope: "post"
   },
+  useChipConveyor: {
+    title      : "Use chip conveyor",
+    description: "Enable/disable usage of the chip conveyor.",
+    group      : "machine",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+
+  // ---- Home & Retract Positions ----
+  safePositionMethod: {
+    title      : "Safe Retracts",
+    description: "Select your desired retract option. 'Clearance Height' retracts to the operation clearance height.",
+    group      : "homePositions",
+    type       : "enum",
+    values     : [
+      {title:"Clearance Height", id:"clearanceHeight"},
+      {title:"G16", id:"G16"},
+      {title:"G0", id:"G0"}
+    ],
+    value: "G0",
+    scope: "post"
+  },
+  forceHomeOnIndexing: {
+    title      : "Force XY home position on indexing",
+    description: "Move XY to their home positions on multi-axis indexing.",
+    group      : "homePositions",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  // CUSTOM: optional G30 P<n> return to a secondary reference point at program end.
+  gotoSecondaryHomeAtEnd: {
+    title      : "Go to secondary home at program end",
+    description: "If enabled, outputs 'G30 P<n>' at the end of the program to send the machine to a secondary reference point. The reference point number is set by 'Secondary home position number'.",
+    group      : "homePositions",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  // CUSTOM: optional G30 P<n> before every M00 program stop.
+  gotoSecondaryHomeAtStop: {
+    title      : "Go to secondary home before program stop",
+    description: "If enabled, outputs 'G30 P<n>' immediately before each M00 program stop. The reference point number is set by 'Secondary home position number'.",
+    group      : "homePositions",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  secondaryHomePositionNumber: {
+    title      : "Secondary home position number",
+    description: "The P-number used in the 'G30 P<n>' return-to-reference-point block emitted at program end. Only used when 'Go to secondary home at program end' is enabled. Valid range depends on machine configuration (typically 1-9).",
+    group      : "homePositions",
+    type       : "integer",
+    value      : 5,
+    range      : [1, 9],
+    scope      : "post"
+  },
+
+  // ---- Tool & Spindle ----
+  preloadTool: {
+    title      : "Preload tool",
+    description: "Preloads the next tool at a tool change (if any).",
+    group      : "tool",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  safeToolChange: {
+    title      : "Enable safe tool change logic",
+    description: "Use logic to check if the tool called is staged or already loaded.",
+    group      : "tool",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  offsetCode: {
+    title      : "Tool length/diameter offset code",
+    description: "Select the output preference for tool length and diameter compensation codes. 'Tool offset' will use the offset numbers associated with the tool.",
+    group      : "tool",
+    type       : "enum",
+    values     : [
+      {title:"Tool offset", id:"toolOffset"},
+      {title:"HA", id:"A"},
+      {title:"HC", id:"C"}
+    ],
+    value: "toolOffset",
+    scope: "post"
+  },
+  toolLifeMonitor: {
+    title      : "Enable tool life monitoring",
+    description: "Adds subprograms to monitor tool life.",
+    group      : "tool",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  loadMonitorVal: {
+    title      : "Spindle load monitoring value",
+    description: "Set a value here to turn on the spindle load monitoring. The Manual NC Action command 'spindleLoadMonitor' can be used to change it on an operation basis.",
+    group      : "tool",
+    type       : "integer",
+    value      : 0,
+    scope      : "post"
+  },
+  dwellAfterStop: {
+    title      : "Dwell time after stop",
+    description: "Specifies the time in seconds to dwell after a stop.",
+    group      : "tool",
+    type       : "number",
+    value      : 0,
+    scope      : "post"
+  },
+
+  // ---- Cycles & Smoothing ----
+  useG284: {
+    title      : "Use G284",
+    description: "Use G284 instead of G84 for tapping cycles.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  useSmoothing: {
+    title      : "High-Cut mode",
+    description: "Select the High-cut contouring mode.",
+    group      : "cycles",
+    type       : "enum",
+    values     : [
+      {title:"Off", id:"-1"},
+      {title:"Automatic", id:"9999"},
+      {title:"High Quality", id:"0"},
+      {title:"Standard", id:"1"},
+      {title:"High Speed", id:"2"}
+    ],
+    value: "-1",
+    scope: "post"
+  },
+  useSmoothingNURBS: {
+    title      : "Enable superNURBS smoothing",
+    description: "Enable to output smoothing blocks using the expanded superNURBS capabilities.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+
+  // ---- Multi-Axis ----
   useTableDirectionCodes: {
     title      : "Use table direction codes",
     description: "If enabled, M15/M16 are used to specify table rotation direction. This property should only be enabled when the rotary axis moves on a rotary scale (has a defined range).",
@@ -206,61 +311,6 @@ properties = {
     range      : [0, 8],
     scope      : "post"
   },
-  toolLifeMonitor: {
-    title      : "Enable tool life monitoring",
-    description: "Adds subprograms to monitor tool life.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  loadMonitorVal: {
-    title      : "Spindle load monitoring value",
-    description: "Set a value here to turn on the spindle load monitoring. The Manual NC Action command 'spindleLoadMonitor' can be used to change it on an operation basis.",
-    group      : "preferences",
-    type       : "integer",
-    value      : 0,
-    scope      : "post"
-  },
-  useG284: {
-    title      : "Use G284",
-    description: "Use G284 instead of G84 for tapping cycles.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  useSmoothing: {
-    title      : "High-Cut mode",
-    description: "Select the High-cut contouring mode.",
-    group      : "preferences",
-    type       : "enum",
-    values     : [
-      {title:"Off", id:"-1"},
-      {title:"Automatic", id:"9999"},
-      {title:"High Quality", id:"0"},
-      {title:"Standard", id:"1"},
-      {title:"High Speed", id:"2"}
-    ],
-    value: "-1",
-    scope: "post"
-  },
-  useSmoothingNURBS: {
-    title      : "Enable superNURBS smoothing",
-    description: "Enable to output smoothing blocks using the expanded superNURBS capabilities.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  safeToolChange: {
-    title      : "Enable safe tool change logic",
-    description: "Use logic to check if the tool called is staged or already loaded.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
   useClampCodes: {
     title      : "Use clamp codes",
     description: "Specifies whether clamp codes for rotary axes should be output.",
@@ -269,42 +319,12 @@ properties = {
     value      : false,
     scope      : "post"
   },
-  // CUSTOM: tombstone rotary WCS spacing - adds (rank * spacing) deg to the rotary
-  // table axis for each unique work offset in the program (useful for a multi-WCS
-  // tombstone setup where each face is at a fixed rotary index).
-  tombstoneRotarySpacing: {
-    title      : "Tombstone rotary WCS spacing (deg)",
-    description: "When non-zero, the rotary table axis is offset by (WCS rank * spacing) degrees, where WCS rank is the section's position (0-based) among all unique work offsets used in the program, sorted in ascending numeric order. Intended for a multi-WCS setup mounted on a rotary tombstone (e.g. 90 deg for a 4-sided tombstone). Validated so that (count - 1) * spacing stays below 360 deg. Set to 0 to disable.",
-    group      : "multiAxis",
-    type       : "number",
-    value      : 90,
-    range      : [0, 360],
-    scope      : "post"
-  },
-  // CUSTOM: tombstone rotary initial offset - added to every rotary command so a
-  // program can run on a station that is not at B0 (e.g. when several programs
-  // share a tombstone and each one starts at its own face).
-  tombstoneRotaryInitial: {
-    title      : "Tombstone rotary initial offset (deg)",
-    description: "Adds a fixed offset (in degrees) to every rotary table axis command, on top of the per-WCS spacing. Use this when the program runs on a station whose home rotary position is not B0 (e.g. a tombstone shared with other programs). Wraps into [0, 360 deg).",
-    group      : "multiAxis",
-    type       : "number",
-    value      : 0,
-    range      : [0, 360],
-    scope      : "post"
-  },
-  // CUSTOM: reuse multi-WCS subprograms - when on, sections that share a Fusion
-  // pattern ID (i.e. copies generated by the "Use Multiple WCS Offsets" option)
-  // are treated as a single reusable pattern subprogram emitted in incremental
-  // (G91) mode. Bypasses the default world-frame bounding-box check that fails
-  // for rotary-tombstone clones. Requires "Use subroutines" to be set to a mode
-  // that includes Patterns (e.g. "All Operations & Patterns" or "Patterns").
-  reuseMultiWCSSubprograms: {
-    title      : "Reuse multi-WCS subprograms (G91)",
-    description: "When enabled, operations duplicated by Fusion's 'Use Multiple WCS Offsets' option are emitted once as an incremental (G91) pattern subprogram and CALLed from each WCS, instead of one subprogram per WCS instance. Bypasses the default world-frame bounding-box check that fails for rotary-tombstone clones. Requires the 'Use subroutines' property to be set to a mode that includes Patterns. Skipped for simultaneous multi-axis or TCP operations.",
+  centerPointOutput: {
+    title      : "Output coordinates at center of ball end mill",
+    description: "Enable to output the coordinates at the center of a ball end mill during multi-axis moves.",
     group      : "multiAxis",
     type       : "boolean",
-    value      : true,
+    value      : false,
     scope      : "post"
   },
   useCAS: {
@@ -323,14 +343,48 @@ properties = {
     value      : false,
     scope      : "post"
   },
-  singleResultsFile: {
-    title      : "Create single results file",
-    description: "Set to false if you want to store the measurement results for each probe / inspection toolpath in a separate file.",
-    group      : "probing",
+
+  // ---- Tombstone & Pattern Reuse ----
+  // CUSTOM: tombstone rotary WCS spacing - adds (rank * spacing) deg to the rotary
+  // table axis for each unique work offset in the program (useful for a multi-WCS
+  // tombstone setup where each face is at a fixed rotary index).
+  tombstoneRotarySpacing: {
+    title      : "Tombstone rotary WCS spacing (deg)",
+    description: "When non-zero, the rotary table axis is offset by (WCS rank * spacing) degrees, where WCS rank is the section's position (0-based) among all unique work offsets used in the program, sorted in ascending numeric order. Intended for a multi-WCS setup mounted on a rotary tombstone (e.g. 90 deg for a 4-sided tombstone). Validated so that (count - 1) * spacing stays below 360 deg. Set to 0 to disable.",
+    group      : "tombstone",
+    type       : "number",
+    value      : 90,
+    range      : [0, 360],
+    scope      : "post"
+  },
+  // CUSTOM: tombstone rotary initial offset - added to every rotary command so a
+  // program can run on a station that is not at B0 (e.g. when several programs
+  // share a tombstone and each one starts at its own face).
+  tombstoneRotaryInitial: {
+    title      : "Tombstone rotary initial offset (deg)",
+    description: "Adds a fixed offset (in degrees) to every rotary table axis command, on top of the per-WCS spacing. Use this when the program runs on a station whose home rotary position is not B0 (e.g. a tombstone shared with other programs). Wraps into [0, 360 deg).",
+    group      : "tombstone",
+    type       : "number",
+    value      : 0,
+    range      : [0, 360],
+    scope      : "post"
+  },
+  // CUSTOM: reuse multi-WCS subprograms - when on, sections that share a Fusion
+  // pattern ID (i.e. copies generated by the "Use Multiple WCS Offsets" option)
+  // are treated as a single reusable pattern subprogram emitted in incremental
+  // (G91) mode. Bypasses the default world-frame bounding-box check that fails
+  // for rotary-tombstone clones. Requires "Use subroutines" to be set to a mode
+  // that includes Patterns (e.g. "All Operations & Patterns" or "Patterns").
+  reuseMultiWCSSubprograms: {
+    title      : "Reuse multi-WCS subprograms (G91)",
+    description: "When enabled, operations duplicated by Fusion's 'Use Multiple WCS Offsets' option are emitted once as an incremental (G91) pattern subprogram and CALLed from each WCS, instead of one subprogram per WCS instance. Bypasses the default world-frame bounding-box check that fails for rotary-tombstone clones. Requires the 'Use subroutines' property to be set to a mode that includes Patterns. Skipped for simultaneous multi-axis or TCP operations.",
+    group      : "tombstone",
     type       : "boolean",
     value      : true,
     scope      : "post"
   },
+
+  // ---- Probing ----
   // CUSTOM: Renishaw Inspection Plus macros (O9901 family) for our probing system.
   useRenishawProbing: {
     title      : "Use Renishaw O9901 probing macros",
@@ -340,66 +394,82 @@ properties = {
     value      : true,
     scope      : "post"
   },
-  centerPointOutput: {
-    title      : "Output coordinates at center of ball end mill",
-    description: "Enable to output the coordinates at the center of a ball end mill during multi-axis moves.",
-    group      : "multiAxis",
+  singleResultsFile: {
+    title      : "Create single results file",
+    description: "Set to false if you want to store the measurement results for each probe / inspection toolpath in a separate file.",
+    group      : "probing",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+
+  // ---- Program Behavior ----
+  optionalStop: {
+    title      : "Optional stop",
+    description: "Outputs optional stop code during when necessary in the code.",
+    group      : "programBehavior",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  // CUSTOM: emit the program as a callable subroutine. Suppresses the final M02
+  // (the controller's main M02 would end execution prematurely) and lets the
+  // program's O<number> label + closing RTS serve as the subroutine entry/exit
+  // so a separate main program can CALL it. Fusion will still write the file
+  // with the default .MIN extension because the extension is fixed at script
+  // load and Fusion does not re-read it from user property values; rename the
+  // posted file to .SSB by hand after posting.
+  outputAsSubroutine: {
+    title      : "Output as subroutine (RTS instead of M02)",
+    description: "When enabled, the program ends with RTS instead of M02 so it can be CALLed from a separate main program. The O<program> header still acts as the entry label and any subprograms are appended after RTS. NOTE: Fusion always writes the file with the .MIN extension (the extension cannot be switched from a property at run time); rename the posted file to .SSB by hand.",
+    group      : "programBehavior",
     type       : "boolean",
     value      : false,
     scope      : "post"
   },
-  offsetCode: {
-    title      : "Tool length/diameter offset code",
-    description: "Select the output preference for tool length and diameter compensation codes. 'Tool offset' will use the offset numbers associated with the tool.",
-    group      : "preferences",
+
+  // ---- Program Output & Formatting ----
+  showSequenceNumbers: {
+    title      : "Use sequence numbers",
+    description: "'Yes' outputs sequence numbers on each block, 'Only on tool change' outputs sequence numbers on tool change blocks only, and 'No' disables the output of sequence numbers.",
+    group      : "output",
     type       : "enum",
     values     : [
-      {title:"Tool offset", id:"toolOffset"},
-      {title:"HA", id:"A"},
-      {title:"HC", id:"C"}
+      {title:"Yes", id:"true"},
+      {title:"No", id:"false"},
+      {title:"Only on tool change", id:"toolChange"}
     ],
-    value: "toolOffset",
+    value: "true",
     scope: "post"
   },
-  forceHomeOnIndexing: {
-    title      : "Force XY home position on indexing",
-    description: "Move XY to their home positions on multi-axis indexing.",
-    group      : "homePositions",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  // CUSTOM: optional G30 P<n> return to a secondary reference point at program end.
-  gotoSecondaryHomeAtEnd: {
-    title      : "Go to secondary home at program end",
-    description: "If enabled, outputs 'G30 P<n>' at the end of the program to send the machine to a secondary reference point. The reference point number is set by 'Secondary home position number'.",
-    group      : "homePositions",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  // CUSTOM: optional G30 P<n> before every M00 program stop.
-  gotoSecondaryHomeAtStop: {
-    title      : "Go to secondary home before program stop",
-    description: "If enabled, outputs 'G30 P<n>' immediately before each M00 program stop. The reference point number is set by 'Secondary home position number'.",
-    group      : "homePositions",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  secondaryHomePositionNumber: {
-    title      : "Secondary home position number",
-    description: "The P-number used in the 'G30 P<n>' return-to-reference-point block emitted at program end. Only used when 'Go to secondary home at program end' is enabled. Valid range depends on machine configuration (typically 1-9).",
-    group      : "homePositions",
+  sequenceNumberStart: {
+    title      : "Start sequence number",
+    description: "The number at which to start the sequence numbers.",
+    group      : "output",
     type       : "integer",
-    value      : 5,
-    range      : [1, 9],
+    value      : 1,
     scope      : "post"
   },
-  useChipConveyor: {
-    title      : "Use chip conveyor",
-    description: "Enable/disable usage of the chip conveyor.",
-    group      : "preferences",
+  sequenceNumberIncrement: {
+    title      : "Sequence number increment",
+    description: "The amount by which the sequence number is incremented by in each block.",
+    group      : "output",
+    type       : "integer",
+    value      : 1,
+    scope      : "post"
+  },
+  separateWordsWithSpace: {
+    title      : "Separate words with space",
+    description: "Adds spaces between words if 'yes' is selected.",
+    group      : "output",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  showNotes: {
+    title      : "Show notes",
+    description: "Writes operation notes as comments in the outputted code.",
+    group      : "output",
     type       : "boolean",
     value      : false,
     scope      : "post"
@@ -3931,7 +4001,7 @@ function startSpindle(tool, insertToolCall) {
 properties.useParametricFeed = {
   title      : "Parametric feed",
   description: "Specifies that the feedrates should be output using parameters.",
-  group      : "preferences",
+  group      : "cycles", // CUSTOM: re-grouped (was "preferences") to match the new groupDefinitions layout
   type       : "boolean",
   value      : false,
   scope      : "post"
@@ -4292,7 +4362,7 @@ function initializeSmoothing(_section) {
 properties.writeMachine = {
   title      : "Write machine",
   description: "Output the machine settings in the header of the program.",
-  group      : "formats",
+  group      : "output", // CUSTOM: re-grouped (was "formats") to match the new groupDefinitions layout
   type       : "boolean",
   value      : true,
   scope      : "post"
@@ -4300,7 +4370,7 @@ properties.writeMachine = {
 properties.writeTools = {
   title      : "Write tool list",
   description: "Output a tool list in the header of the program.",
-  group      : "formats",
+  group      : "output", // CUSTOM: re-grouped (was "formats") to match the new groupDefinitions layout
   type       : "boolean",
   value      : true,
   scope      : "post"
@@ -4367,7 +4437,7 @@ function writeProgramHeader() {
 properties.useSubroutines = {
   title      : "Use subroutines",
   description: "Select your desired subroutine option. 'All Operations' creates subroutines per each operation, 'Cycles' creates subroutines for cycle operations on same holes, and 'Patterns' creates subroutines for patterned operations.",
-  group      : "preferences",
+  group      : "programBehavior", // CUSTOM: re-grouped (was "preferences") to match the new groupDefinitions layout
   type       : "enum",
   values     : [
     {title:"No", id:"none"},
@@ -4383,7 +4453,7 @@ properties.useSubroutines = {
 properties.useFilesForSubprograms = {
   title      : "Use files for subroutines",
   description: "If enabled, subroutines will be saved as individual files.",
-  group      : "preferences",
+  group      : "programBehavior", // CUSTOM: re-grouped (was "preferences") to match the new groupDefinitions layout
   type       : "boolean",
   value      : false,
   scope      : "post"

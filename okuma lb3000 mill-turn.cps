@@ -49,86 +49,69 @@ allowFeedPerRevolutionDrilling = true;
 highFeedrate = (unit == IN) ? 100 : 2500;
 
 // user-defined properties
+// CUSTOM: post property groups with display titles, descriptions, and ordering.
+// Without this block, Fusion falls back to alphabetical groups labeled by the
+// raw key (e.g. "barPuller", "homePositions") rather than the readable titles
+// here. If the running Fusion version doesn't honor groupDefinitions, the
+// properties still work -- only the sidebar grouping is affected.
+groupDefinitions = {
+  machine: {
+    title      : "Machine Configuration",
+    description: "Physical capabilities and travel limits of the lathe. Usually set once per machine.",
+    order      : 0
+  },
+  homePositions: {
+    title      : "Home Positions",
+    description: "Retract / home positions used for tool changes, section transitions, and program start/end.",
+    order      : 1
+  },
+  spindle: {
+    title      : "Spindle & C-Axis",
+    description: "Spindle startup behavior, gear-range output, and C-axis indexing controls.",
+    order      : 2
+  },
+  cycles: {
+    title      : "Cycles, Feeds & Arcs",
+    description: "Canned drilling/turning cycles, feed-mode behavior, axial-drilling positioning, and arc output format.",
+    order      : 3
+  },
+  barPuller: {
+    title      : "Bar Puller",
+    description: "Tool-based bar pull cycle for machines without a secondary spindle.",
+    order      : 4
+  },
+  stockHandling: {
+    title      : "Stock Handling",
+    description: "Tailstock, part catcher, auto-eject, and stock-transfer behaviors.",
+    order      : 5
+  },
+  programBehavior: {
+    title      : "Program Behavior",
+    description: "Per-operation safety: optional stops, safe restarts, load monitoring.",
+    order      : 6
+  },
+  output: {
+    title      : "Program Output & Formatting",
+    description: "Sequence numbers, header comments, operation notes, and word spacing.",
+    order      : 7
+  }
+};
+
 properties = {
-  gotSecondarySpindle: {
-    title      : "Got secondary spindle",
-    description: "Specifies if the machine has a secondary spindle.",
-    group      : "configuration",
+  // ---- Machine Configuration ----
+  // CUSTOM: declare whether the machine actually has a Y-axis (turret 1)
+  gotYAxis: {
+    title      : "Has Y-axis (turret 1)",
+    description: "Set to false on machines without a Y-axis (e.g. older Okuma lathes). When off, the post will not emit G138 / Y-axis Cartesian mode and will keep X in diameter mode for live-tool sections. Toolpaths that require actual Y-axis travel will error out.",
+    group      : "machine",
     type       : "boolean",
     value      : false,
     scope      : "post"
   },
-  // CUSTOM: tool-based bar puller (no secondary spindle required)
-  useToolBarPuller: {
-    title      : "Use tool-based bar puller",
-    description: "Handle bar-pull cycles with a tool that has bar-pulling fingers instead of a secondary spindle. The puller tool's X offset must be set so that commanding X0 places the fingers at the ideal grip position on the bar. The Z offset is calibrated normally (program Z matches the part WCS). The actual grip Z is computed at post time from the tracked minimum machined Z plus 'Bar puller Z offset'.",
-    group      : "barPuller",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  toolBarPullerNumber: {
-    title      : "Bar puller tool number",
-    description: "Tool number of the bar pulling tool to activate during bar-pull cycles. The tool's offset register is assumed to match its number (e.g. tool 6 -> T060606).",
-    group      : "barPuller",
-    type       : "integer",
-    range      : [1, 99],
-    value      : 7,
-    scope      : "post"
-  },
-  barPullerZOffset: {
-    title      : "Bar puller Z offset",
-    description: "Z offset of the bar puller grip position relative to the start of the unmachined stock (the chuck-side boundary of the deepest previously-machined feature, tracked automatically by the post). Typically zero or slightly negative to grip a hair into the unmachined region. Positive values grip further out (toward the tailstock), negative values grip closer to the chuck.",
-    group      : "barPuller",
-    type       : "spatial",
-    value      : 0,
-    scope      : "post"
-  },
-  // CUSTOM: configurable turning-mode entry code (G270 / M109 / none)
-  turningModeCommand: {
-    title      : "Turning-mode entry code",
-    description: "Code emitted at the start of turning sections to ensure the machine is in turning mode. 'G270' is the modern Okuma enter-turning-mode G code. Older Okuma controls (e.g. LB15-II) do not support G270 -- instead choose 'M109' so the C-axis is explicitly disabled (which is what is actually required for the spindle to rotate freely). Choose 'None' to suppress this output entirely.",
-    group      : "preferences",
-    type       : "enum",
-    values     : [
-      {title:"G270 (modern Okuma)", id:"g270"},
-      {title:"M109 (disable C-axis)", id:"m109"},
-      {title:"None", id:"none"}
-    ],
-    value      : "m109",
-    scope      : "post"
-  },
-  // CUSTOM: spindle gear-range output (M41 low / M42 high)
-  useGearRanges: {
-    title      : "Output spindle gear-range codes",
-    description: "When on, emits an M41/M42 gear-range code alongside each spindle-on block. M41 (low range) is used for live-tool sections (milling and off-center / indexed drilling). M42 (high range) is used for everything spun on the main spindle, including on-center drilling. Leave off for machines without selectable gear ranges.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  // CUSTOM: force feed-per-revolution (G95) on drilling sections
-  feedPerRevForDrilling: {
-    title      : "Feed per revolution for drilling",
-    description: "When on, drilling cycles are posted in feed-per-revolution (G95) mode regardless of the Fusion operation's feed-mode setting. The cutting feedrate from Fusion (in/min or mm/min) is converted to per-rev by dividing by spindle RPM at post time. This lets you tweak spindle speed at the control without invalidating the feed.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  xAxisMinimum: {
-    title      : "X-axis minimum limit",
-    description: "Defines the lower limit of X-axis travel as a radius value.",
-    group      : "configuration",
-    type       : "spatial",
-    range      : [-99999, 0],
-    value      : 0,
-    scope      : "post"
-  },
-  usePartCatcher: {
-    title      : "Use part catcher",
-    description: "Specifies whether part catcher code should be output.",
-    group      : "configuration",
+  gotSecondarySpindle: {
+    title      : "Got secondary spindle",
+    description: "Specifies if the machine has a secondary spindle.",
+    group      : "machine",
     type       : "boolean",
     value      : false,
     scope      : "post"
@@ -136,16 +119,25 @@ properties = {
   gotChipConveyor: {
     title       : "Got chip conveyor",
     description : "Specifies whether to use a chip conveyor.",
-    group       : "configuration",
+    group       : "machine",
     type        : "boolean",
     presentation: "yesno",
     value       : false,
     scope       : "post"
   },
+  maximumSpindleSpeed: {
+    title      : "Max spindle speed",
+    description: "Defines the maximum spindle speed allowed by your machines.",
+    group      : "machine",
+    type       : "integer",
+    range      : [0, 999999999],
+    value      : 3500,
+    scope      : "post"
+  },
   maxTool: {
     title      : "Max tool number",
     description: "Defines the maximum tool number.",
-    group      : "configuration",
+    group      : "machine",
     type       : "integer",
     range      : [0, 999999999],
     value      : 12,
@@ -154,99 +146,23 @@ properties = {
   maxToolOffset: {
     title      : "Max tool offset number",
     description: "Defines the maximum tool offset number.",
-    group      : "configuration",
+    group      : "machine",
     type       : "integer",
     range      : [0, 999999999],
     value      : 96,
     scope      : "post"
   },
-  maximumSpindleSpeed: {
-    title      : "Max spindle speed",
-    description: "Defines the maximum spindle speed allowed by your machines.",
-    group      : "configuration",
-    type       : "integer",
-    range      : [0, 999999999],
-    value      : 3500,
+  xAxisMinimum: {
+    title      : "X-axis minimum limit",
+    description: "Defines the lower limit of X-axis travel as a radius value.",
+    group      : "machine",
+    type       : "spatial",
+    range      : [-99999, 0],
+    value      : 0,
     scope      : "post"
   },
-  showSequenceNumbers: {
-    title      : "Use sequence numbers",
-    description: "'Yes' outputs sequence numbers on each block, 'Only on tool change' outputs sequence numbers on tool change blocks only, and 'No' disables the output of sequence numbers.",
-    group      : "formats",
-    type       : "enum",
-    values     : [
-      {title:"Yes", id:"true"},
-      {title:"No", id:"false"},
-      {title:"Only on tool change", id:"toolChange"}
-    ],
-    value: "toolChange",
-    scope: "post"
-  },
-  sequenceNumberStart: {
-    title      : "Start sequence number",
-    description: "The number at which to start the sequence numbers.",
-    group      : "formats",
-    type       : "integer",
-    value      : 1,
-    scope      : "post"
-  },
-  sequenceNumberIncrement: {
-    title      : "Sequence number increment",
-    description: "The amount by which the sequence number is incremented by in each block.",
-    group      : "formats",
-    type       : "integer",
-    value      : 1,
-    scope      : "post"
-  },
-  useRadius: {
-    title      : "Radius arcs",
-    description: "If yes is selected, arcs are outputted using radius values rather than IJK.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  useCycles: {
-    title      : "Use cycles",
-    description: "Specifies if canned drilling cycles should be used.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  optionalStop: {
-    title      : "Optional stop",
-    description: "Outputs optional stop code during when necessary in the code.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  useParametricFeed: {
-    title      : "Parametric feed",
-    description: "Specifies the feed value that should be output using a Q value.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  autoEject: {
-    title      : "Auto eject",
-    description: "Specifies whether the part should automatically eject at the end of a program.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  useTailStock: {
-    title       : "Use tailstock",
-    description : "Specifies whether to use the tailstock or not.",
-    group       : "configuration",
-    type        : "boolean",
-    presentation: "yesno",
-    value       : false,
-    scope       : "post"
-  },
+
+  // ---- Home Positions ----
   homePositionX: {
     title      : "X home position in radius",
     description: "X home position specified in radius.",
@@ -279,83 +195,35 @@ properties = {
     value      : 0,
     scope      : "post"
   },
-  transferUseTorque: {
-    title      : "Stock-transfer torque control",
-    description: "Use torque control for stock transfer.",
-    group      : "preferences",
+
+  // ---- Spindle & C-Axis ----
+  // CUSTOM: configurable turning-mode entry code (G270 / M109 / none)
+  turningModeCommand: {
+    title      : "Turning-mode entry code",
+    description: "Code emitted at the start of turning sections to ensure the machine is in turning mode. 'G270' is the modern Okuma enter-turning-mode G code. Older Okuma controls (e.g. LB15-II) do not support G270 -- instead choose 'M109' so the C-axis is explicitly disabled (which is what is actually required for the spindle to rotate freely). Choose 'None' to suppress this output entirely.",
+    group      : "spindle",
+    type       : "enum",
+    values     : [
+      {title:"G270 (modern Okuma)", id:"g270"},
+      {title:"M109 (disable C-axis)", id:"m109"},
+      {title:"None", id:"none"}
+    ],
+    value      : "m109",
+    scope      : "post"
+  },
+  // CUSTOM: spindle gear-range output (M41 low / M42 high)
+  useGearRanges: {
+    title      : "Output spindle gear-range codes",
+    description: "When on, emits an M41/M42 gear-range code alongside each spindle-on block. M41 (low range) is used for live-tool sections (milling and off-center / indexed drilling). M42 (high range) is used for everything spun on the main spindle, including on-center drilling. Leave off for machines without selectable gear ranges.",
+    group      : "spindle",
     type       : "boolean",
-    value      : false,
+    value      : true,
     scope      : "post"
   },
   optimizeCAxisSelect: {
     title      : "Optimize C axis selection",
     description: "Optimizes the output of enable/disable C-axis codes.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  useSimpleThread: {
-    title      : "Use simple threading cycle",
-    description: "Enable to output G33 simple threading cycle, disable to output G71 standard threading cycle.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  useYAxisForDrilling: {
-    title      : "Position in Y for axial drilling",
-    description: "Positions in Y for axial drilling options when it can instead of using the C-axis.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  // CUSTOM: declare whether the machine actually has a Y-axis (turret 1)
-  gotYAxis: {
-    title      : "Has Y-axis (turret 1)",
-    description: "Set to false on machines without a Y-axis (e.g. older Okuma lathes). When off, the post will not emit G138 / Y-axis Cartesian mode and will keep X in diameter mode for live-tool sections. Toolpaths that require actual Y-axis travel will error out.",
-    group      : "preferences",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  writeVersion: {
-    title      : "Write version",
-    description: "Write the version number in the header of the code.",
-    group      : "formats",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  separateWordsWithSpace: {
-    title      : "Separate words with space",
-    description: "Adds spaces between words if 'yes' is selected.",
-    group      : "formats",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
-  },
-  showNotes: {
-    title      : "Show notes",
-    description: "Writes operation notes as comments in the outputted code.",
-    group      : "formats",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  writeMachine: {
-    title      : "Write machine",
-    description: "Output the machine settings in the header of the code.",
-    group      : "formats",
-    type       : "boolean",
-    value      : false,
-    scope      : "post"
-  },
-  writeTools: {
-    title      : "Write tool list",
-    description: "Output a tool list in the header of the code.",
-    group      : "formats",
+    group      : "spindle",
     type       : "boolean",
     value      : false,
     scope      : "post"
@@ -363,15 +231,139 @@ properties = {
   useShortestDirection: {
     title      : "Use C-axis shortest direction code",
     description: "Specifies that an M960 should be used to control the C-axis direction instead of the M15/M16 directional codes.",
-    group      : "multiAxis",
+    group      : "spindle",
     type       : "boolean",
     value      : false,
+    scope      : "post"
+  },
+
+  // ---- Cycles, Feeds & Arcs ----
+  useCycles: {
+    title      : "Use cycles",
+    description: "Specifies if canned drilling cycles should be used.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  // CUSTOM: force feed-per-revolution (G95) on drilling sections
+  feedPerRevForDrilling: {
+    title      : "Feed per revolution for drilling",
+    description: "When on, drilling cycles are posted in feed-per-revolution (G95) mode regardless of the Fusion operation's feed-mode setting. The cutting feedrate from Fusion (in/min or mm/min) is converted to per-rev by dividing by spindle RPM at post time. This lets you tweak spindle speed at the control without invalidating the feed.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  useSimpleThread: {
+    title      : "Use simple threading cycle",
+    description: "Enable to output G33 simple threading cycle, disable to output G71 standard threading cycle.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  useYAxisForDrilling: {
+    title      : "Position in Y for axial drilling",
+    description: "Positions in Y for axial drilling options when it can instead of using the C-axis.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  useParametricFeed: {
+    title      : "Parametric feed",
+    description: "Specifies the feed value that should be output using a Q value.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  useRadius: {
+    title      : "Radius arcs",
+    description: "If yes is selected, arcs are outputted using radius values rather than IJK.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+
+  // ---- Bar Puller ----
+  // CUSTOM: tool-based bar puller (no secondary spindle required)
+  useToolBarPuller: {
+    title      : "Use tool-based bar puller",
+    description: "Handle bar-pull cycles with a tool that has bar-pulling fingers instead of a secondary spindle. The puller tool's X offset must be set so that commanding X0 places the fingers at the ideal grip position on the bar. The Z offset is calibrated normally (program Z matches the part WCS). The actual grip Z is computed at post time from the tracked minimum machined Z plus 'Bar puller Z offset'.",
+    group      : "barPuller",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  toolBarPullerNumber: {
+    title      : "Bar puller tool number",
+    description: "Tool number of the bar pulling tool to activate during bar-pull cycles. The tool's offset register is assumed to match its number (e.g. tool 6 -> T060606).",
+    group      : "barPuller",
+    type       : "integer",
+    range      : [1, 99],
+    value      : 7,
+    scope      : "post"
+  },
+  barPullerZOffset: {
+    title      : "Bar puller Z offset",
+    description: "Z offset of the bar puller grip position relative to the start of the unmachined stock (the chuck-side boundary of the deepest previously-machined feature, tracked automatically by the post). Typically zero or slightly negative to grip a hair into the unmachined region. Positive values grip further out (toward the tailstock), negative values grip closer to the chuck.",
+    group      : "barPuller",
+    type       : "spatial",
+    value      : 0,
+    scope      : "post"
+  },
+
+  // ---- Stock Handling ----
+  useTailStock: {
+    title       : "Use tailstock",
+    description : "Specifies whether to use the tailstock or not.",
+    group       : "stockHandling",
+    type        : "boolean",
+    presentation: "yesno",
+    value       : false,
+    scope       : "post"
+  },
+  usePartCatcher: {
+    title      : "Use part catcher",
+    description: "Specifies whether part catcher code should be output.",
+    group      : "stockHandling",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  autoEject: {
+    title      : "Auto eject",
+    description: "Specifies whether the part should automatically eject at the end of a program.",
+    group      : "stockHandling",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  transferUseTorque: {
+    title      : "Stock-transfer torque control",
+    description: "Use torque control for stock transfer.",
+    group      : "stockHandling",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+
+  // ---- Program Behavior ----
+  optionalStop: {
+    title      : "Optional stop",
+    description: "Outputs optional stop code during when necessary in the code.",
+    group      : "programBehavior",
+    type       : "boolean",
+    value      : true,
     scope      : "post"
   },
   safeStartAllOperations: {
     title      : "Safe start all operations",
     description: "Write optional blocks at the beginning of all operations that include all commands to start program.",
-    group      : "preferences",
+    group      : "programBehavior",
     type       : "boolean",
     value      : false,
     scope      : "post"
@@ -379,10 +371,81 @@ properties = {
   loadMonitoring: {
     title      : "Load monitoring",
     description: "A value that enables which axes should be monitored.  1 = X, 2 = Z, 3 = XZ, etc.",
-    group      : "preferences",
+    group      : "programBehavior",
     type       : "integer",
     range      : [0, 1013],
     value      : 0,
+    scope      : "post"
+  },
+
+  // ---- Program Output & Formatting ----
+  showSequenceNumbers: {
+    title      : "Use sequence numbers",
+    description: "'Yes' outputs sequence numbers on each block, 'Only on tool change' outputs sequence numbers on tool change blocks only, and 'No' disables the output of sequence numbers.",
+    group      : "output",
+    type       : "enum",
+    values     : [
+      {title:"Yes", id:"true"},
+      {title:"No", id:"false"},
+      {title:"Only on tool change", id:"toolChange"}
+    ],
+    value: "toolChange",
+    scope: "post"
+  },
+  sequenceNumberStart: {
+    title      : "Start sequence number",
+    description: "The number at which to start the sequence numbers.",
+    group      : "output",
+    type       : "integer",
+    value      : 1,
+    scope      : "post"
+  },
+  sequenceNumberIncrement: {
+    title      : "Sequence number increment",
+    description: "The amount by which the sequence number is incremented by in each block.",
+    group      : "output",
+    type       : "integer",
+    value      : 1,
+    scope      : "post"
+  },
+  separateWordsWithSpace: {
+    title      : "Separate words with space",
+    description: "Adds spaces between words if 'yes' is selected.",
+    group      : "output",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  writeVersion: {
+    title      : "Write version",
+    description: "Write the version number in the header of the code.",
+    group      : "output",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  writeMachine: {
+    title      : "Write machine",
+    description: "Output the machine settings in the header of the code.",
+    group      : "output",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  writeTools: {
+    title      : "Write tool list",
+    description: "Output a tool list in the header of the code.",
+    group      : "output",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  showNotes: {
+    title      : "Show notes",
+    description: "Writes operation notes as comments in the outputted code.",
+    group      : "output",
+    type       : "boolean",
+    value      : false,
     scope      : "post"
   }
 };

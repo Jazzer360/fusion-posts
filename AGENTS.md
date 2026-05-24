@@ -53,6 +53,23 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
 
 ### `okuma.cps`
 
+- **Re-grouped post properties with `groupDefinitions` for sidebar layout.**
+  - The stock post lumped most properties under generic groups (`preferences` / `configuration` / `formats` / `multiAxis`) with no display titles or ordering, so Fusion sorted them alphabetically and labeled them with the raw keys. The properties block is now reorganized into nine cohesive groups, displayed in the order below; the new top-level `groupDefinitions = { ... }` block (added immediately above `properties = { ... }`) controls each group's title, description, and `order` index. Property *definitions* inside the main `properties = { ... }` literal are reordered to match the same group sequence so the file reads top-to-bottom in display order. All property keys and types are unchanged -- only `group:` values and definition position were touched, so `getProperty("name")` callers and any saved Fusion configurations keep working.
+  - Group keys → display titles → property keys (in display order):
+    1. `machine` "Machine Configuration": `rotaryTableAxis`, `useChipConveyor`.
+    2. `homePositions` "Home & Retract Positions": `safePositionMethod`, `forceHomeOnIndexing`, `gotoSecondaryHomeAtEnd`, `gotoSecondaryHomeAtStop`, `secondaryHomePositionNumber`.
+    3. `tool` "Tool & Spindle": `preloadTool`, `safeToolChange`, `offsetCode`, `toolLifeMonitor`, `loadMonitorVal`, `dwellAfterStop`.
+    4. `cycles` "Cycles & Smoothing": `useG284`, `useSmoothing`, `useSmoothingNURBS` (plus the injected `useParametricFeed` from `parametricFeeds.cpi`).
+    5. `multiAxis` "Multi-Axis": `useTableDirectionCodes`, `tiltedWorkPlaneMethod`, `fixtureOffsetWCS`, `rotaryOffsetWCS`, `useClampCodes`, `centerPointOutput`, `useCAS`, `useTPOC`.
+    6. `tombstone` "Tombstone & Pattern Reuse": `tombstoneRotarySpacing`, `tombstoneRotaryInitial`, `reuseMultiWCSSubprograms`.
+    7. `probing` "Probing": `useRenishawProbing`, `singleResultsFile`.
+    8. `programBehavior` "Program Behavior": `optionalStop`, `outputAsSubroutine` (plus the injected `useSubroutines` / `useFilesForSubprograms` from `subprograms.cpi`).
+    9. `output` "Program Output & Formatting": `showSequenceNumbers`, `sequenceNumberStart`, `sequenceNumberIncrement`, `separateWordsWithSpace`, `showNotes` (plus the injected `writeMachine` / `writeTools` from `writeProgramHeader.cpi`).
+  - Injected-property note: five user properties are added at runtime from `// >>>>> INCLUDED FROM include_files/*.cpi` blocks via `properties.<name> = { ... }` rather than being part of the main `properties` literal. Each had its `group:` value updated in place with an inline `// CUSTOM: re-grouped (was "...")` comment so an upstream re-vendor of those `.cpi` files is easy to re-reconcile. The five and their new groups: `useParametricFeed` → `cycles`, `writeMachine` → `output`, `writeTools` → `output`, `useSubroutines` → `programBehavior`, `useFilesForSubprograms` → `programBehavior`.
+  - `groupDefinitions` is the standard Autodesk Post API mechanism for naming and ordering property groups. If a particular Fusion build doesn't honor it, the properties still work -- they'd just be shown grouped by the raw key (`machine`, `homePositions`, etc.) in alphabetical order, with no group descriptions.
+  - When adding a new property, set its `group:` to one of the nine keys above and place the definition next to its siblings inside `properties = { ... }`. Don't reintroduce `"preferences"` / `"configuration"` / `"formats"` as group values -- they have no `groupDefinitions` entry and would surface as a stray alphabetical group at the bottom of the sidebar.
+  - Marker comments: `// CUSTOM: post property groups with display titles, descriptions, and ordering` (`groupDefinitions` block), `// CUSTOM: re-grouped (was "...")` (each injected-property site).
+
 - **Optional `G30 P<n>` return-to-secondary-home at program end.**
   - Properties (group `homePositions`):
     - `gotoSecondaryHomeAtEnd` (boolean, default `false`) — master enable.
@@ -61,7 +78,7 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - Marker comment: `// CUSTOM: optional G30 P<n>` (one site in `properties`, one in `onClose`).
 
 - **Output as subroutine (RTS instead of M02).**
-  - Property (group `preferences`):
+  - Property (group `programBehavior`):
     - `outputAsSubroutine` (boolean, default `false`) — when on, the program ends with `RTS` instead of `M02` so it can be `CALL`ed from a separate main program. The opening `O<programName>` header doubles as the subroutine entry label; any internal subprograms appended via `writeSubprograms()` follow the closing `RTS` exactly as in the `M02` case.
   - File extension: Fusion always writes the file with the default `.MIN` extension. The `extension` global is read once at script load and `getProperty()` does not return user-set values at module scope, so the extension cannot be flipped from a property at run time. **Rename the posted file to `.SSB` by hand after posting.**
   - Implementation site: in `onClose`, the `onCommand(COMMAND_END)` call (which maps to `M2`) is replaced with `writeBlock("RTS")` when the property is on.
@@ -101,7 +118,7 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - Marker comment: `// CUSTOM: Renishaw` (property definition + `isRenishawProbeCycle` helper + each gated site).
 
 - **Tombstone rotary WCS spacing.**
-  - Property (group `multiAxis`):
+  - Property (group `tombstone`):
     - `tombstoneRotarySpacing` (number, default `0`, range 0-360) - degrees of rotary-axis offset per WCS step. `0` disables the per-WCS spacing.
     - `tombstoneRotaryInitial` (number, default `0`, range 0-360) - fixed degrees added to every rotary command on top of the per-WCS spacing. Use when the program runs on a station whose home rotary position is not B0 (e.g. a tombstone shared with other programs).
   - Behavior: `initTombstoneRotaryWCS()` (called from `onOpen` after `defineMachine` / `activateMachine`) always resolves the rotary table axis coordinate (0=A, 1=B, 2=C) from `machineConfiguration.getAxisV()` / `getAxisU()` whenever the machine is multi-axis - preferring the cyclic table axis (the C axis on 5-axis configs, the single rotary on 4-axis configs). Axis detection is intentionally *not* gated on the tombstone properties so the rotary-normalization path in `applyTombstoneRotaryOffset` is reachable even when the user has no tombstone offset configured (see normalization note below). When `tombstoneRotarySpacing > 0`, it additionally scans every section, collects the unique `workOffset` values, sorts them ascending, and assigns each a 0-based rank.
@@ -119,7 +136,7 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - Marker comment: `// CUSTOM: tombstone rotary WCS` (property definitions + helper block above `onOpen` + the three application sites).
 
 - **Reuse multi-WCS subprograms (G91 pattern dedup).**
-  - Property (group `multiAxis`):
+  - Property (group `tombstone`):
     - `reuseMultiWCSSubprograms` (boolean, default `false`) - when on, sections that share a Fusion pattern ID (i.e. copies generated by the setup's "Use Multiple WCS Offsets" option) are emitted as a single incremental (G91) pattern subprogram and CALLed from each WCS instance, instead of one subprogram per WCS.
   - Requires the stock `useSubroutines` post property to be set to a mode that includes Patterns (e.g. `"All Operations & Patterns"` or `"Patterns"`). Has no effect under `"All Operations"` because that mode never invokes pattern detection.
   - Behavior: a custom branch in `subprogramIsValid` (SUB_PATTERN path) skips the default world-frame `areSpatialBoxesSame` / `areSpatialBoxesTranslated` checks - those fail for rotary-tombstone clones because the copies are rotated, not translated, in world coords. Instead, any same-`patternId` section is accepted as a valid clone and `subprogramState.incrementalSubprogram` is forced to `true`. The existing `subprogramStart` / `subprogramEnd` plumbing then wraps the body in `G91` ... `G90` via `setAbsIncMode`, so per-CALL deltas are emitted in each WCS-local frame.
@@ -131,6 +148,21 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
 ---
 
 ### `okuma lb3000 mill-turn.cps`
+
+- **Re-grouped post properties with `groupDefinitions` for sidebar layout.**
+  - The stock post lumped most properties under generic groups (`preferences` / `configuration` / `formats` / `multiAxis`) with no display titles or ordering, so Fusion sorted them alphabetically and labeled them with the raw keys. The properties block is now reorganized into eight cohesive groups, displayed in the order below; the new top-level `groupDefinitions = { ... }` block (added immediately above `properties = { ... }`) controls each group's title, description, and `order` index. Property *definitions* inside `properties` are reordered to match the same group sequence so the file reads top-to-bottom in display order. All property keys and types are unchanged -- only `group:` values and definition position were touched, so `getProperty("name")` callers and any saved Fusion configurations keep working.
+  - Group keys → display titles → property keys (in display order):
+    1. `machine` "Machine Configuration": `gotYAxis`, `gotSecondarySpindle`, `gotChipConveyor`, `maximumSpindleSpeed`, `maxTool`, `maxToolOffset`, `xAxisMinimum`.
+    2. `homePositions` "Home Positions": `homePositionX`, `homePositionY`, `homePositionZ`, `homePositionW`.
+    3. `spindle` "Spindle & C-Axis": `turningModeCommand`, `useGearRanges`, `optimizeCAxisSelect`, `useShortestDirection`.
+    4. `cycles` "Cycles, Feeds & Arcs": `useCycles`, `feedPerRevForDrilling`, `useSimpleThread`, `useYAxisForDrilling`, `useParametricFeed`, `useRadius`.
+    5. `barPuller` "Bar Puller": `useToolBarPuller`, `toolBarPullerNumber`, `barPullerZOffset`.
+    6. `stockHandling` "Stock Handling": `useTailStock`, `usePartCatcher`, `autoEject`, `transferUseTorque`.
+    7. `programBehavior` "Program Behavior": `optionalStop`, `safeStartAllOperations`, `loadMonitoring`.
+    8. `output` "Program Output & Formatting": `showSequenceNumbers`, `sequenceNumberStart`, `sequenceNumberIncrement`, `separateWordsWithSpace`, `writeVersion`, `writeMachine`, `writeTools`, `showNotes`.
+  - `groupDefinitions` is the standard Autodesk Post API mechanism for naming and ordering property groups. If a particular Fusion build doesn't honor it, the properties still work -- they'd just be shown grouped by the raw key (`machine`, `homePositions`, etc.) in alphabetical order, with no group descriptions.
+  - When adding a new property, set its `group:` to one of the eight keys above and place the definition next to its siblings inside `properties = { ... }`. Don't reintroduce `"preferences"` / `"configuration"` / `"formats"` / `"multiAxis"` as group values -- they have no `groupDefinitions` entry and would surface as a stray alphabetical group at the bottom of the sidebar.
+  - Marker comment: `// CUSTOM: post property groups with display titles, descriptions, and ordering` (`groupDefinitions` block).
 
 - **Tool-based bar puller (no secondary spindle required).**
   - Our LB3000 has no programmable bar feeder and no secondary spindle. Instead we use a tool with gripping fingers that engages the bar, the chuck unclamps, the bar feeds out by the pull distance, the chuck re-clamps, and the puller retracts.
@@ -162,7 +194,7 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
 
 - **Configurable turning-mode entry code (G270 / M109 / None).**
   - Stock post emits `G270` (ENABLE_TURNING) before every turning section. The LB15-II's OSP control does not implement `G270` at all. What older Okumas actually need at the same point is `M109` (disable C-axis indexing) so the main spindle is free to rotate -- after any prior live-tool/milling section the C-axis is still engaged via `M110`, and trying to spin the spindle in that state errors out.
-  - Property (group `preferences`):
+  - Property (group `spindle`):
     - `turningModeCommand` (enum, default `"g270"`) - one of:
       - `"g270"` -> emit `G270` via `gPlaneModal` (stock behavior).
       - `"m109"` -> emit `M109` (DISABLE_C_AXIS) via `mFormat`. Use on the LB15-II.
@@ -180,7 +212,7 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
     - Drilling on the Z-axis centerline (drill held in turret, main spindle spinning the part) -> `M42` (high range, same as turning).
     - Live-tool sections (milling, off-center indexed drilling) -> `M41` (low range; the live-tool drive uses the low gear path).
     - Detection rule in the code: `M41` if `getSpindle(TOOL) == SPINDLE_LIVE`, else `M42`. This matches the user's three cases above because on-center axial drilling on a lathe is `SPINDLE_MAIN` (the main spindle spins the part), not `SPINDLE_LIVE`.
-  - Property (group `preferences`):
+  - Property (group `spindle`):
     - `useGearRanges` (boolean, default `false`) - master enable. Off keeps stock behavior (no gear-range output). On for the LB15-II.
   - Implementation: in `startSpindle`, immediately before the existing `writeBlock(gSpindleModeModal.format(spindleMode), scode, spindleDir)`, a `gearCode` word is built (`mFormat.format(41)` or `mFormat.format(42)` based on `getSpindle(TOOL)`) and inserted into the same block, producing output like `G96 S500 M42 M4` (matches the hand-written reference program's format exactly). When the property is off `gearCode` is `""`, which `writeBlock` skips.
   - **Dedup:** `gearCode` is suppressed when the gear hasn't changed since the last emission. A module-level `lastEmittedGear` tracks the last-emitted gear value (41 or 42, reset to `undefined` in `onOpen`). On a section that requests the same gear, `gearCode = ""` so the `M41`/`M42` word does not appear -- the first section of each gear emits it, subsequent same-gear sections (and intra-section G96/G97 mode swaps within a single tool) don't.
@@ -189,14 +221,14 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
 
 - **Configurable Y-axis presence (turret 1).**
   - The stock `defineMachine` hard-codes `turret1GotYAxis = true`, which forces the post to emit `G138` (ENABLE_Y_AXIS, which also switches X to radius mode) for every live-tool section -- including radial drilling, which Fusion classifies as `MACHINING_DIRECTION_RADIAL` (G19 plane). On the LB15-II there is no Y-axis: radial drilling is supposed to be done with C-axis indexing + diameter-mode X (e.g. `G181 X-.5 Z.. C180 ...`), not `G138 X<radius> Y0.`. The existing `useYAxisForDrilling` property only gates the **axial** drilling branch and does nothing for radial machining.
-  - Property (group `preferences`):
+  - Property (group `machine`):
     - `gotYAxis` (boolean, default `false`) - declares whether turret 1 has a real Y-axis. Default `false` for LB15-II / older Okuma lathes. Set to `true` on a machine that actually has Y.
   - Implementation: in `defineMachine`, `turret1GotYAxis = getProperty("gotYAxis")` instead of the hard-coded `true`. When off, `gotYAxis` flows through everywhere the post checks it: the `if (gotYAxis && ...)` gate at the top of `onSection` that emits `G138` is never satisfied, so `xFormat` stays at the diameter scale and no `Y` word is output. The radial-machining safety check in `updateMachiningMode` (`if (!gotYAxis) { if (!isMultiAxis && !yAxisWithinLimits) error(...) }`) will catch any toolpath that genuinely needs Y travel and error out -- which is the correct behavior on a no-Y machine.
   - Caveat: any milling toolpath that has actual Y motion (e.g. a slot machined off-center without polar interpolation) will error. 2D contour ops using `G137` polar interpolation are unaffected (polar interp keeps `usePolarInterpolation = true`, the `G138` gate is bypassed, and X/Y in the toolpath are converted to polar XC coords).
   - Marker comment: `// CUSTOM: declare whether the machine actually has a Y-axis` (property definition) and `// CUSTOM: turret 1 Y-axis presence is user-configurable` (the `defineMachine` site).
 
 - **Force feed-per-revolution (G95) on drilling cycles.**
-  - Property (group `preferences`):
+  - Property (group `cycles`):
     - `feedPerRevForDrilling` (boolean, default `true`) - when on, drilling sections are emitted in G95 (feed-per-revolution) mode regardless of the Fusion operation's feed-mode setting. Lets the operator override spindle RPM at the control without invalidating the feedrate (matches the hand-written reference program's `F0.005`-style drill feeds).
   - Implementation: helper `getEffectiveFeedMode(section)` placed immediately above `formatFeedMode`. Returns `FEED_PER_REVOLUTION` when the property is on and `isDrillingCycle(section, false)` is true, else returns the section's natural `feedMode`. The one `onSection` call site (`var feedMode = formatFeedMode(currentSection.feedMode)`) is rewritten to `formatFeedMode(getEffectiveFeedMode(currentSection))`.
   - Mechanism: `formatFeedMode(FEED_PER_REVOLUTION)` emits `G95` and sets `machineState.feedPerRevolution = true` plus `feedFormat = fprFormat`. Downstream, `getFeed()` already has a "section's feedMode is per-min but machine is in G95 -> divide by spindleSpeed" branch (line ~1192) — it fires naturally because the *natural* `currentSection.feedMode` is still `FEED_PER_MINUTE` for typical in/min drill ops. So `getFeed(cycle.feedrate)` converts the Fusion per-min value to per-rev and formats it with `fprFormat`. No other call sites need adjustment because the parametric-feed path is bypassed for drilling (`if (getProperty("useParametricFeed") && !isDrillingCycle(true))` at line ~2000).
