@@ -58,6 +58,55 @@ properties = {
     value      : false,
     scope      : "post"
   },
+  // CUSTOM: tool-based bar puller (no secondary spindle required)
+  useToolBarPuller: {
+    title      : "Use tool-based bar puller",
+    description: "Handle bar-pull cycles with a tool that has bar-pulling fingers instead of a secondary spindle. The puller tool's X offset must be set so that commanding X0 places the fingers at the ideal grip position on the bar. The Z offset is calibrated normally (program Z matches the part WCS). The actual grip Z is computed at post time from the tracked minimum machined Z plus 'Bar puller Z offset'.",
+    group      : "barPuller",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  toolBarPullerNumber: {
+    title      : "Bar puller tool number",
+    description: "Tool number of the bar pulling tool to activate during bar-pull cycles. The tool's offset register is assumed to match its number (e.g. tool 6 -> T060606).",
+    group      : "barPuller",
+    type       : "integer",
+    range      : [1, 99],
+    value      : 7,
+    scope      : "post"
+  },
+  barPullerZOffset: {
+    title      : "Bar puller Z offset",
+    description: "Z offset of the bar puller grip position relative to the start of the unmachined stock (the chuck-side boundary of the deepest previously-machined feature, tracked automatically by the post). Typically zero or slightly negative to grip a hair into the unmachined region. Positive values grip further out (toward the tailstock), negative values grip closer to the chuck.",
+    group      : "barPuller",
+    type       : "spatial",
+    value      : 0,
+    scope      : "post"
+  },
+  // CUSTOM: configurable turning-mode entry code (G270 / M109 / none)
+  turningModeCommand: {
+    title      : "Turning-mode entry code",
+    description: "Code emitted at the start of turning sections to ensure the machine is in turning mode. 'G270' is the modern Okuma enter-turning-mode G code. Older Okuma controls (e.g. LB15-II) do not support G270 -- instead choose 'M109' so the C-axis is explicitly disabled (which is what is actually required for the spindle to rotate freely). Choose 'None' to suppress this output entirely.",
+    group      : "preferences",
+    type       : "enum",
+    values     : [
+      {title:"G270 (modern Okuma)", id:"g270"},
+      {title:"M109 (disable C-axis)", id:"m109"},
+      {title:"None", id:"none"}
+    ],
+    value      : "m109",
+    scope      : "post"
+  },
+  // CUSTOM: spindle gear-range output (M41 low / M42 high)
+  useGearRanges: {
+    title      : "Output spindle gear-range codes",
+    description: "When on, emits an M41/M42 gear-range code alongside each spindle-on block. M41 (low range) is used for live-tool sections (milling and off-center / indexed drilling). M42 (high range) is used for everything spun on the main spindle, including on-center drilling. Leave off for machines without selectable gear ranges.",
+    group      : "preferences",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
   xAxisMinimum: {
     title      : "X-axis minimum limit",
     description: "Defines the lower limit of X-axis travel as a radius value.",
@@ -108,7 +157,7 @@ properties = {
     group      : "configuration",
     type       : "integer",
     range      : [0, 999999999],
-    value      : 6000,
+    value      : 3500,
     scope      : "post"
   },
   showSequenceNumbers: {
@@ -194,7 +243,7 @@ properties = {
     description: "X home position specified in radius.",
     group      : "homePositions",
     type       : "spatial",
-    value      : 0,
+    value      : 15,
     scope      : "post"
   },
   homePositionY: {
@@ -210,7 +259,7 @@ properties = {
     description: "Z home position.",
     group      : "homePositions",
     type       : "spatial",
-    value      : 0,
+    value      : 5,
     scope      : "post"
   },
   homePositionW: {
@@ -248,6 +297,15 @@ properties = {
   useYAxisForDrilling: {
     title      : "Position in Y for axial drilling",
     description: "Positions in Y for axial drilling options when it can instead of using the C-axis.",
+    group      : "preferences",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  // CUSTOM: declare whether the machine actually has a Y-axis (turret 1)
+  gotYAxis: {
+    title      : "Has Y-axis (turret 1)",
+    description: "Set to false on machines without a Y-axis (e.g. older Okuma lathes). When off, the post will not emit G138 / Y-axis Cartesian mode and will keep X in diameter mode for live-tool sections. Toolpaths that require actual Y-axis travel will error out.",
     group      : "preferences",
     type       : "boolean",
     value      : false,
@@ -772,7 +830,8 @@ function writeStartBlocks(isRequired, code) {
 function defineMachine() {
   gotSecondarySpindle = getProperty("gotSecondarySpindle");
   gotMultiTurret = false;
-  turret1GotYAxis = true;
+  // CUSTOM: turret 1 Y-axis presence is user-configurable (default false for LB15-II / older Okuma lathes)
+  turret1GotYAxis = getProperty("gotYAxis");
   turret2GotYAxis = false;
   yAxisMinimum = toPreciseUnit(-45, MM); // specifies the minimum range for the Y-axis
   yAxisMaximum = toPreciseUnit(70, MM); // specifies the maximum range for the Y-axis
@@ -1553,7 +1612,7 @@ function onSection() {
         onCommand(COMMAND_STOP_SPINDLE);
         forceUnlockMultiAxis();
         if (tempSpindle != SPINDLE_LIVE) {
-          writeBlock(gPlaneModal.format(getCode("ENABLE_TURNING", getSpindle(PART))));
+          writeTurningModeEntry(); // CUSTOM: configurable G270 / M109 / none
         } else {
           onCommand(COMMAND_UNLOCK_MULTI_AXIS);
           if ((tempSpindle != SPINDLE_LIVE) && !getProperty("optimizeCAxisSelect")) {
@@ -1726,7 +1785,7 @@ function onSection() {
         cAxisEngageModal.reset();
       }
       // writeBlock(wcsOut, mFormat.format(getSpindle(PART) == SPINDLE_SUB ? 83 : 80));
-      writeBlock(gPlaneModal.format(getCode("ENABLE_TURNING", getSpindle(PART))));
+      writeTurningModeEntry(); // CUSTOM: configurable G270 / M109 / none
       writeBlock(feedMode, gPlaneModal.format(18));
     } else {
       writeBlock(feedMode);
@@ -2635,7 +2694,203 @@ var wAxisTorqueUpper = 30;
 var wAxisTorqueMiddle = 25;
 var wAxisTorqueLower = 5;
 
+// CUSTOM: bar puller minimum-Z tracking. Tracks the most-negative Z that any
+// machining operation has reached in the current part WCS frame, so the tool-based
+// bar puller can grip on unmachined stock without colliding with prior features.
+// For radial (G19) machining the tool body extends `tool.diameter/2` past the
+// commanded Z toward the chuck, so that radius is subtracted when accumulating.
+// After a bar pull, the stock has physically shifted +Z by the pulling distance,
+// so the tracker is incremented by that same amount.
+var minMachinedZ; // undefined until first updated
+
+function getInitialMinMachinedZ() {
+  // Default to the front face of the original stock workpiece, if available.
+  try {
+    var wp = getWorkpiece();
+    if (wp && wp.upper && isFinite(wp.upper.z)) {
+      return wp.upper.z;
+    }
+  } catch (e) {}
+  return 0;
+}
+
+function updateMinMachinedZ() {
+  if (!getProperty("useToolBarPuller")) {
+    return;
+  }
+  if (currentSection == undefined) {
+    return;
+  }
+  // Skip bar-pull / sub-spindle cycle sections -- they don't machine stock and
+  // writeToolBarPullerCycle() adjusts the tracker explicitly. machineState.
+  // stockTransferIsActive is the reliable signal: writeToolBarPullerCycle sets
+  // it to true at the end of the bar-pull, and it is reset at the start of the
+  // next section's onSection (see line ~1647), so during the bar-pull section's
+  // own onSectionEnd it is true and during the next section's onSectionEnd it
+  // is false. The cycle-type string check is kept as a fallback in case Fusion
+  // ever changes the bar-pull flow; the `operation:cycleType` parameter does
+  // not appear to be exposed on Fusion's bar-pull sections today.
+  if (machineState.stockTransferIsActive) {
+    return;
+  }
+  if (hasParameter("operation:cycleType")) {
+    var ct = getParameter("operation:cycleType");
+    if (ct == "secondary-spindle-pull" ||
+        ct == "secondary-spindle-return" ||
+        ct == "secondary-spindle-grab" ||
+        ((typeof isSubSpindleCycle == "function") && isSubSpindleCycle(ct))) {
+      return;
+    }
+  }
+  if (minMachinedZ == undefined) {
+    minMachinedZ = getInitialMinMachinedZ();
+  }
+  var zRange = currentSection.getGlobalZRange();
+  if (zRange == undefined) {
+    return;
+  }
+  var sectionMinZ = zRange.getMinimum();
+  // Radial machining: the cylindrical tool body extends toolRadius past the commanded
+  // Z toward the chuck, so the chuck-side machined extent is that much deeper.
+  if (getMachiningDirection(currentSection) == MACHINING_DIRECTION_RADIAL) {
+    var t = currentSection.getTool();
+    if (t) {
+      sectionMinZ -= t.diameter / 2;
+    }
+  }
+  if (sectionMinZ < minMachinedZ) {
+    minMachinedZ = sectionMinZ;
+  }
+}
+
+// CUSTOM: tool-based bar puller. Emit a complete bar-pull routine using a tool with
+// gripping fingers instead of relying on a secondary spindle. The puller tool's X
+// offset must be set so that X0 places the fingers at the ideal grip position; the
+// tool's Z offset is calibrated normally (program Z matches the part WCS Z). The
+// grip Z is computed from the tracked minimum machined Z plus 'Bar puller Z offset'.
+function writeToolBarPullerCycle() {
+  if (cycleType != "secondary-spindle-pull") {
+    error(localize("Tool-based bar puller only supports the 'Bar Pull' (secondary-spindle-pull) cycle. Disable 'Use tool-based bar puller' or remove the unsupported cycle."));
+    return;
+  }
+  var pullDistance = cycle.pullingDistance;
+  if (!(pullDistance > 0)) {
+    error(localize("Bar puller pulling distance must be greater than zero."));
+    return;
+  }
+  var toolNumber = getProperty("toolBarPullerNumber");
+  if (!(toolNumber > 0)) {
+    error(localize("Set the 'Bar puller tool number' post property."));
+    return;
+  }
+  // Pull feedrate, dwell, and stock diameter all come from the Fusion setup / operation.
+  var pullFeed = cycle.feedrate;
+  if (!(pullFeed > 0)) {
+    error(localize("Bar pull operation must specify a feedrate."));
+    return;
+  }
+  var dwell = cycle.dwell;
+  if (!(dwell >= 0)) {
+    dwell = 0;
+  }
+  // Read stock diameter from the active setup's workpiece bounding box.
+  var workpiece = getWorkpiece();
+  var stockDiameter = Math.max(
+    workpiece.upper.x - workpiece.lower.x,
+    workpiece.upper.y - workpiece.lower.y
+  );
+  if (!(stockDiameter > 0)) {
+    error(localize("Could not determine stock diameter from the setup workpiece. Configure cylindrical stock on the setup."));
+    return;
+  }
+  var approachRadius = stockDiameter / 2; // xFormat scales radius->diameter on output
+
+  // CUSTOM: compute the grip Z dynamically from tracked machining history.
+  // gripZ is in the active part WCS frame (the puller tool's Z offset is set normally
+  // so program Z corresponds to the part WCS origin). The configurable offset shifts
+  // the grip relative to the chuck-side boundary of the deepest previously-machined
+  // feature (i.e. the start of the unmachined region of the bar).
+  if (minMachinedZ == undefined) {
+    minMachinedZ = getInitialMinMachinedZ();
+  }
+  var gripZ = minMachinedZ + getProperty("barPullerZOffset");
+
+  writeln("");
+  var comment = getParameter("operation-comment", "");
+  if (comment) {
+    writeComment(comment);
+  }
+  writeComment("BAR PULL (TOOL-BASED)");
+
+  // Bring the machine to a safe state before the tool change.
+  onCommand(COMMAND_STOP_SPINDLE);
+  onCommand(COMMAND_COOLANT_OFF);
+  onCommand(COMMAND_OPTIONAL_STOP);
+  writeRetract(X);
+  writeRetract(Z);
+
+  // Tool change to the bar puller tool. The tool's offset register matches its number,
+  // matching formatTool() output for maxToolOffset<=99: T<offset1><tool><offset2> with
+  // both offsets == tool number (e.g. tool 6 -> T060606). For maxToolOffset>99 use the
+  // alternate compact form: T<offset*1000+tool>.
+  var pullerToolWord;
+  if (getProperty("maxToolOffset") > 99) {
+    pullerToolWord = "T" + tool1Format.format(toolNumber * 1000 + toolNumber);
+  } else {
+    pullerToolWord = "T" + tool1Format.format(toolNumber * 10000 + toolNumber * 100 + toolNumber);
+  }
+  gMotionModal.reset();
+  writeBlock(pullerToolWord);
+
+  // Force feed/min mode and reset modals before positioning.
+  gFeedModeModal.reset();
+  feedOutput.reset();
+  xOutput.reset();
+  zOutput.reset();
+  writeBlock(gFeedModeModal.format(getCode("FEED_MODE_UNIT_MIN", getSpindle(TOOL))));
+
+  // Rapid to approach position: X at stock diameter, then Z at the computed grip position.
+  writeBlock(gMotionModal.format(0), xOutput.format(approachRadius));
+  writeBlock(gMotionModal.format(0), zOutput.format(gripZ));
+
+  // Feed onto the bar (X0 = ideal grip position on the fingers).
+  writeBlock(gMotionModal.format(1), xOutput.format(0), feedOutput.format(pullFeed));
+
+  // Unclamp the main chuck, dwell to let it release.
+  writeBlock(mFormat.format(getCode("UNCLAMP_CHUCK", SPINDLE_MAIN)), formatComment("UNCLAMP MAIN CHUCK"));
+  if (dwell > 0) {
+    onDwell(dwell);
+  }
+
+  // Feed the bar out by the requested pulling distance (+Z = away from chuck).
+  writeBlock(gMotionModal.format(1), zOutput.format(gripZ + pullDistance), feedOutput.format(pullFeed));
+
+  // Clamp the main chuck back onto the bar, dwell to let it grip.
+  writeBlock(mFormat.format(getCode("CLAMP_CHUCK", SPINDLE_MAIN)), formatComment("CLAMP MAIN CHUCK"));
+  if (dwell > 0) {
+    onDwell(dwell);
+  }
+
+  // Feed back out to stock diameter to clear the fingers, then rapid home.
+  writeBlock(gMotionModal.format(1), xOutput.format(approachRadius), feedOutput.format(pullFeed));
+  writeRetract(X);
+  writeRetract(Z);
+
+  // CUSTOM: the stock has physically shifted +Z by pullDistance, so every previously
+  // tracked machined feature moves with it. Slide the tracker accordingly.
+  minMachinedZ += pullDistance;
+
+  // Mark stock-transfer-like state so downstream section setup skips spindle/coolant restart logic.
+  machineState.stockTransferIsActive = true;
+}
+
 function onCycle() {
+  // CUSTOM: tool-based bar puller short-circuit.
+  if (getProperty("useToolBarPuller") &&
+      (typeof isSubSpindleCycle == "function") && isSubSpindleCycle(cycleType)) {
+    writeToolBarPullerCycle();
+    return;
+  }
   if ((typeof isSubSpindleCycle == "function") && isSubSpindleCycle(cycleType)) {
     if (!gotSecondarySpindle) {
       error(localize("Secondary spindle is not available."));
@@ -3302,6 +3557,17 @@ function onSpindleSpeed(spindleSpeed) {
   }
 }
 
+// CUSTOM: emit configured turning-mode entry code (G270 / M109 / none)
+function writeTurningModeEntry() {
+  var mode = getProperty("turningModeCommand");
+  if (mode == "g270") {
+    writeBlock(gPlaneModal.format(getCode("ENABLE_TURNING", getSpindle(PART))));
+  } else if (mode == "m109") {
+    writeBlock(mFormat.format(getCode("DISABLE_C_AXIS", getSpindle(PART))));
+  }
+  // "none" -> emit nothing
+}
+
 function startSpindle(tappingMode, forceRPMMode, initialPosition) {
   var spindleDir;
   var _spindleSpeed;
@@ -3339,7 +3605,12 @@ function startSpindle(tappingMode, forceRPMMode, initialPosition) {
   }
 
   var scode = getSpindle(TOOL) == SPINDLE_LIVE ? sbOutput.format(_spindleSpeed) : sOutput.format(_spindleSpeed);
-  writeBlock(gSpindleModeModal.format(spindleMode), scode, spindleDir);
+  // CUSTOM: optional M41 (low / live tool) / M42 (high / main spindle) gear-range code
+  var gearCode = "";
+  if (getProperty("useGearRanges")) {
+    gearCode = mFormat.format(getSpindle(TOOL) == SPINDLE_LIVE ? 41 : 42);
+  }
+  writeBlock(gSpindleModeModal.format(spindleMode), scode, gearCode, spindleDir);
   // wait for spindle here if required
 
   lastSpindleMode = tool.getSpindleMode();
@@ -3527,6 +3798,10 @@ function engagePartCatcher(engage) {
 
 function onSectionEnd() {
 
+  // CUSTOM: accumulate the deepest machined Z so the tool-based bar puller can
+  // place its grip on unmachined stock without hitting prior features.
+  updateMinMachinedZ();
+
   if (machineState.usePolarInterpolation) {
     setPolarInterpolation(false); // disable polar interpolation mode
   }
@@ -3593,7 +3868,7 @@ function onClose() {
   writeRetract(X);
   writeRetract(Z);
 
-  writeBlock(gPlaneModal.format(getCode("ENABLE_TURNING"), getSpindle(PART)));
+  writeTurningModeEntry(); // CUSTOM: configurable G270 / M109 / none
 
   // cancel load monitoring
   if (getProperty("loadMonitoring") != 0) {
