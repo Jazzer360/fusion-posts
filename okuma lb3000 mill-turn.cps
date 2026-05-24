@@ -107,6 +107,15 @@ properties = {
     value      : true,
     scope      : "post"
   },
+  // CUSTOM: force feed-per-revolution (G95) on drilling sections
+  feedPerRevForDrilling: {
+    title      : "Feed per revolution for drilling",
+    description: "When on, drilling cycles are posted in feed-per-revolution (G95) mode regardless of the Fusion operation's feed-mode setting. The cutting feedrate from Fusion (in/min or mm/min) is converted to per-rev by dividing by spindle RPM at post time. This lets you tweak spindle speed at the control without invalidating the feed.",
+    group      : "preferences",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
   xAxisMinimum: {
     title      : "X-axis minimum limit",
     description: "Defines the lower limit of X-axis travel as a radius value.",
@@ -524,6 +533,9 @@ var tapping = false;
 var ejectRoutine = false;
 var bestABC = undefined;
 var lastSpindleMode = undefined;
+// CUSTOM: last gear-range M-code (41 or 42) actually emitted, so we can
+// suppress a redundant M41/M42 when the gear hasn't changed. Reset in onOpen.
+var lastEmittedGear = undefined;
 var lastSpindleSpeed = 0;
 var lastSpindleDirection = undefined;
 var operationNeedsSafeStart = false; // used to convert blocks to optional for safeStartAllOperations
@@ -1116,6 +1128,30 @@ function onOpen() {
   if (getProperty("autoEject")) {
     ejectRoutine = true;
   }
+
+  // CUSTOM: reset bar-pull tracking flags so a previous post run can't leak
+  // state into this one (these are module-level so they persist).
+  barPullPreludeEmitted = false;
+  barPullWroteOwnWrapup = false;
+  minMachinedZ = undefined;
+
+  // CUSTOM: reset the gear-range and spindle-direction trackers used to
+  // dedup M41/M42 and M03/M04 in startSpindle, so the very first section
+  // of a fresh post always emits both. Also clear the machineState spindle
+  // "active" flags that COMMAND_STOP_SPINDLE / startSpindle now read for
+  // dedup, in case the engine keeps module state between post runs.
+  lastEmittedGear = undefined;
+  lastSpindleDirection = undefined;
+  machineState.mainSpindleIsActive = false;
+  machineState.subSpindleIsActive = false;
+  machineState.liveToolIsActive = false;
+
+  // CUSTOM: emit initial home retract so the program starts at the home position.
+  // The redundant writeRetract(X, Z) inside onSection's "Position all axes at home"
+  // block has been removed to avoid duplicating this on the first section.
+  gMotionModal.reset();
+  writeRetract(X);
+  writeRetract(Z);
 }
 
 function onComment(message) {
@@ -1177,6 +1213,20 @@ function FeedContext(id, description, feed) {
   this.id = id;
   this.description = description;
   this.feed = feed;
+}
+
+// CUSTOM: return the feed mode we want to drive the section with. When
+// 'feedPerRevForDrilling' is on and the section is a drilling cycle, force
+// FEED_PER_REVOLUTION regardless of the Fusion operation's feedMode. The
+// per-min -> per-rev conversion happens automatically in getFeed() because it
+// keys off machineState.feedPerRevolution (set true when G95 is emitted) and
+// the section's natural feedMode (still FEED_PER_MINUTE for in/min ops).
+function getEffectiveFeedMode(section) {
+  if (getProperty("feedPerRevForDrilling") &&
+      section && isDrillingCycle(section, false)) {
+    return FEED_PER_REVOLUTION;
+  }
+  return section.feedMode;
 }
 
 function formatFeedMode(mode) {
@@ -1602,8 +1652,15 @@ function onSection() {
   }
   newSpindle = tempSpindle != previousSpindle;
 
-  // End the previous section if a new tool is selected
-  if (!isFirstSection() && insertToolCall &&
+  // End the previous section if a new tool is selected.
+  // CUSTOM: if the previous section was a tool-based bar pull, it already
+  // emitted its own wrap-up (retract X, retract Z, optional stop) at the end
+  // of writeToolBarPullerCycle. Skip this block so we don't double up the
+  // home retract / M01. Consume the flag here so a later same-tool section
+  // (no insertToolCall) doesn't accidentally swallow a future wrap-up.
+  if (barPullWroteOwnWrapup) {
+    barPullWroteOwnWrapup = false;
+  } else if (!isFirstSection() && insertToolCall &&
       !(machineState.stockTransferIsActive && partCutoff)) {
     if (machineState.stockTransferIsActive) {
       writeBlock(mFormat.format(getCode("SPINDLE_SYNCHRONIZATION_OFF", getSpindle(PART))), formatComment("SYNCHRONIZED ROTATION OFF"));
@@ -1620,6 +1677,13 @@ function onSection() {
             writeBlock(cAxisEngageModal.format(getCode("DISABLE_C_AXIS", getSpindle(PART))));
           }
         }
+      } else {
+        // CUSTOM: stop the main spindle too so the M05 lands inside the
+        // previous section's wrap-up (before the retract + M01) instead of at
+        // the top of the next section. COMMAND_STOP_SPINDLE in onCommand is
+        // dedup-suppressed when the spindle isn't actually running, so this
+        // is a safe no-op when there's nothing to stop.
+        onCommand(COMMAND_STOP_SPINDLE);
       }
       onCommand(COMMAND_COOLANT_OFF);
     }
@@ -1680,8 +1744,9 @@ function onSection() {
           writeBlock(gMotionModal.format(0), gFormat.format(28), gFormat.format(53), "B" + abcFormat.format(0)); // retract Sub Spindle if applicable
         }
     */
+      // CUSTOM: redundant writeRetract(X, Z) removed -- onOpen emits the initial
+      // home, and the previous section's wrap-up (above) already retracted.
       gMotionModal.reset();
-      writeRetract(X, Z);
 
       // Stop the spindle
       if (newSpindle) {
@@ -1708,7 +1773,8 @@ function onSection() {
   if (insertToolCall) {
     forceModals();
   }
-  var feedMode = formatFeedMode(currentSection.feedMode);
+  // CUSTOM: optionally force feed-per-rev (G95) for drilling sections
+  var feedMode = formatFeedMode(getEffectiveFeedMode(currentSection));
 
   // calculate rotary angles
   var abc = new Vector(0, 0, 0);
@@ -2703,6 +2769,18 @@ var wAxisTorqueLower = 5;
 // so the tracker is incremented by that same amount.
 var minMachinedZ; // undefined until first updated
 
+// CUSTOM: when true, the previous section's onSectionEnd has already emitted
+// the bar-pull prelude (spindle stop, coolant off, optional stop, retracts)
+// for the upcoming bar-pull section, so writeToolBarPullerCycle should skip
+// re-emitting them. Reset back to false after consumption.
+var barPullPreludeEmitted = false;
+
+// CUSTOM: when true, the bar-pull section just wrote its own complete wrap-up
+// (retract X, retract Z, optional stop) at the end of writeToolBarPullerCycle,
+// so the next section's onSection should skip its normal previous-section
+// wrap-up to avoid emitting duplicate home/M1 blocks. Reset after consumption.
+var barPullWroteOwnWrapup = false;
+
 function getInitialMinMachinedZ() {
   // Default to the front face of the original stock workpiece, if available.
   try {
@@ -2722,14 +2800,15 @@ function updateMinMachinedZ() {
     return;
   }
   // Skip bar-pull / sub-spindle cycle sections -- they don't machine stock and
-  // writeToolBarPullerCycle() adjusts the tracker explicitly. machineState.
-  // stockTransferIsActive is the reliable signal: writeToolBarPullerCycle sets
-  // it to true at the end of the bar-pull, and it is reset at the start of the
-  // next section's onSection (see line ~1647), so during the bar-pull section's
-  // own onSectionEnd it is true and during the next section's onSectionEnd it
-  // is false. The cycle-type string check is kept as a fallback in case Fusion
-  // ever changes the bar-pull flow; the `operation:cycleType` parameter does
-  // not appear to be exposed on Fusion's bar-pull sections today.
+  // writeToolBarPullerCycle() adjusts the tracker explicitly. We detect bar-pull
+  // sections directly via currentSection.hasCycle("secondary-spindle-pull"),
+  // which is reliable across the section's lifetime. The other sub-spindle
+  // cycle-type strings stay as a defensive fallback for any future flow that
+  // might expose `operation:cycleType` (today it isn't populated on bar-pull
+  // sections in Fusion, so the cycle-type check is silent there).
+  if (currentSection.hasCycle && currentSection.hasCycle("secondary-spindle-pull")) {
+    return;
+  }
   if (machineState.stockTransferIsActive) {
     return;
   }
@@ -2822,12 +2901,18 @@ function writeToolBarPullerCycle() {
   }
   writeComment("BAR PULL (TOOL-BASED)");
 
-  // Bring the machine to a safe state before the tool change.
-  onCommand(COMMAND_STOP_SPINDLE);
-  onCommand(COMMAND_COOLANT_OFF);
-  onCommand(COMMAND_OPTIONAL_STOP);
-  writeRetract(X);
-  writeRetract(Z);
+  // CUSTOM: prelude (spindle stop, coolant off, optional stop, retracts) is
+  // normally emitted at the tail end of the previous section's onSectionEnd so
+  // that it visually belongs to wrapping up the prior operation rather than
+  // looking like it lives inside the bar-pull body. Skip if already done.
+  if (!barPullPreludeEmitted) {
+    onCommand(COMMAND_STOP_SPINDLE);
+    onCommand(COMMAND_COOLANT_OFF);
+    onCommand(COMMAND_OPTIONAL_STOP);
+    writeRetract(X);
+    writeRetract(Z);
+  }
+  barPullPreludeEmitted = false;
 
   // Tool change to the bar puller tool. The tool's offset register matches its number,
   // matching formatTool() output for maxToolOffset<=99: T<offset1><tool><offset2> with
@@ -2840,6 +2925,13 @@ function writeToolBarPullerCycle() {
     pullerToolWord = "T" + tool1Format.format(toolNumber * 10000 + toolNumber * 100 + toolNumber);
   }
   gMotionModal.reset();
+  // CUSTOM: emit an N<seqno> on the puller tool change line so the bar-pull
+  // section's tool call matches the appearance of every other section's tool
+  // change (e.g. "N4 T070707"). Mirrors the trick used in onSection right
+  // before its own writeBlock(formatTool(tool, false)).
+  if (getProperty("showSequenceNumbers") == "toolChange") {
+    showSequenceNumbers = "true";
+  }
   writeBlock(pullerToolWord);
 
   // Force feed/min mode and reset modals before positioning.
@@ -2873,15 +2965,20 @@ function writeToolBarPullerCycle() {
 
   // Feed back out to stock diameter to clear the fingers, then rapid home.
   writeBlock(gMotionModal.format(1), xOutput.format(approachRadius), feedOutput.format(pullFeed));
+
+  // CUSTOM: bar-pull section's own wrap-up. Matches the canonical order used
+  // for every other section: retract X, retract Z, optional stop -- so the
+  // bar-pull section ends at home with an M01 just like a turning or drilling
+  // section. The next section's onSection will see barPullWroteOwnWrapup=true
+  // and skip its own previous-section wrap-up to avoid duplicating these.
   writeRetract(X);
   writeRetract(Z);
+  onCommand(COMMAND_OPTIONAL_STOP);
+  barPullWroteOwnWrapup = true;
 
   // CUSTOM: the stock has physically shifted +Z by pullDistance, so every previously
   // tracked machined feature moves with it. Slide the tracker accordingly.
   minMachinedZ += pullDistance;
-
-  // Mark stock-transfer-like state so downstream section setup skips spindle/coolant restart logic.
-  machineState.stockTransferIsActive = true;
 }
 
 function onCycle() {
@@ -3370,6 +3467,13 @@ function onCyclePoint(x, y, z) {
 }
 
 function onCycleEnd() {
+  // CUSTOM: tool-based bar pull doesn't use a canned drilling cycle, so the
+  // trailing G180 cycle-cancel that the stock post would emit here is a stray
+  // code that lands after the bar-pull body. Skip it for that cycle type.
+  if (getProperty("useToolBarPuller") && cycleType == "secondary-spindle-pull") {
+    skipThreading = true;
+    return;
+  }
   if (!cycleExpanded && !machineState.stockTransferIsActive) {
     writeBlock(gCycleModal.format(180));
     gMotionModal.reset();
@@ -3580,6 +3684,16 @@ function startSpindle(tappingMode, forceRPMMode, initialPosition) {
     return;
   }
 
+  // CUSTOM: snapshot whether the relevant spindle is already running *before*
+  // we call getCode("START_SPINDLE_*", ...), which flips the corresponding
+  // machineState.*SpindleIsActive flag to true as a side effect. Used below
+  // to suppress a redundant M03/M04 word when the spindle is already on in
+  // the requested direction.
+  var __activeSpindle = getSpindle(TOOL);
+  var __spindleAlreadyOn = (__activeSpindle == SPINDLE_LIVE) ? machineState.liveToolIsActive :
+                           (__activeSpindle == SPINDLE_SUB)  ? machineState.subSpindleIsActive :
+                                                               machineState.mainSpindleIsActive;
+
   if (false /*tappingMode*/) {
     spindleDir = mFormat.format(getCode("RIGID_TAPPING", getSpindle(TOOL)));
   } else {
@@ -3605,11 +3719,25 @@ function startSpindle(tappingMode, forceRPMMode, initialPosition) {
   }
 
   var scode = getSpindle(TOOL) == SPINDLE_LIVE ? sbOutput.format(_spindleSpeed) : sOutput.format(_spindleSpeed);
-  // CUSTOM: optional M41 (low / live tool) / M42 (high / main spindle) gear-range code
+  // CUSTOM: optional M41 (low / live tool) / M42 (high / main spindle) gear-range code,
+  // suppressed when the gear hasn't actually changed since the last emission.
   var gearCode = "";
   if (getProperty("useGearRanges")) {
-    gearCode = mFormat.format(getSpindle(TOOL) == SPINDLE_LIVE ? 41 : 42);
+    var __newGear = (getSpindle(TOOL) == SPINDLE_LIVE) ? 41 : 42;
+    if (__newGear != lastEmittedGear) {
+      gearCode = mFormat.format(__newGear);
+      lastEmittedGear = __newGear;
+    }
   }
+
+  // CUSTOM: suppress the M03/M04 spindle-direction word when the requested
+  // spindle was already running in the requested direction (snapshot taken
+  // above before getCode flipped the active flag). Avoids redundant M03
+  // emissions on every G96/G97 mode swap or speed change within a section.
+  if (__spindleAlreadyOn && (lastSpindleDirection === tool.clockwise)) {
+    spindleDir = "";
+  }
+
   writeBlock(gSpindleModeModal.format(spindleMode), scode, gearCode, spindleDir);
   // wait for spindle here if required
 
@@ -3670,6 +3798,18 @@ function onCommand(command) {
     writeBlock(mFormat.format(2));
     break;
   case COMMAND_STOP_SPINDLE:
+    // CUSTOM: skip M05/M12 when the relevant spindle isn't currently running.
+    // The machineState flags are kept up-to-date by getCode("STOP_SPINDLE", ...)
+    // / getCode("START_SPINDLE_CW"|"_CCW", ...) so they reflect the last issued
+    // start/stop. Keeps the wrap-up cleanly paired without spurious stop codes
+    // (e.g. an M12 at the top of a section after the previous section already
+    // emitted one).
+    var __stopActive = (activeSpindle == SPINDLE_LIVE) ? machineState.liveToolIsActive :
+                       (activeSpindle == SPINDLE_SUB)  ? machineState.subSpindleIsActive :
+                                                         machineState.mainSpindleIsActive;
+    if (!__stopActive) {
+      break;
+    }
     writeBlock(mFormat.format(getCode("STOP_SPINDLE", activeSpindle)));
     forceSpindleSpeed = true;
     break;
@@ -3802,6 +3942,10 @@ function onSectionEnd() {
   // place its grip on unmachined stock without hitting prior features.
   updateMinMachinedZ();
 
+  // CUSTOM: run polar / Y-axis teardown BEFORE the bar-pull prelude (and
+  // BEFORE any wrap-up emitted at the top of the next section's onSection)
+  // so the cycle's own cleanup codes (G136, etc.) land inside the cycle's
+  // section -- ahead of the retract / M01 -- instead of trailing after them.
   if (machineState.usePolarInterpolation) {
     setPolarInterpolation(false); // disable polar interpolation mode
   }
@@ -3815,6 +3959,25 @@ function onSectionEnd() {
     writeBlock(gMotionModal.format(0), yOutput.format(0));
     writeBlock(gPolarModal.format(getCode("DISABLE_Y_AXIS", true)));
     yOutput.disable();
+  }
+
+  // CUSTOM: if the next section is a tool-based bar pull, emit the wrap-up
+  // (spindle/coolant/retract/optional-stop) here so it visually closes out the
+  // current operation instead of being buried inside the bar-pull block.
+  // Order matches every other section's wrap-up: stop spindle, coolant off,
+  // retract X, retract Z, then optional stop -- home before M1.
+  if (getProperty("useToolBarPuller") &&
+      !machineState.stockTransferIsActive &&
+      ((getCurrentSectionId() + 1) < getNumberOfSections())) {
+    var nextSection = getNextSection();
+    if (nextSection && nextSection.hasCycle && nextSection.hasCycle("secondary-spindle-pull")) {
+      onCommand(COMMAND_STOP_SPINDLE);
+      onCommand(COMMAND_COOLANT_OFF);
+      writeRetract(X);
+      writeRetract(Z);
+      onCommand(COMMAND_OPTIONAL_STOP);
+      barPullPreludeEmitted = true;
+    }
   }
 
   // cancel SFM mode to preserve spindle speed
