@@ -90,10 +90,16 @@ groupDefinitions = {
     description: "Per-operation safety: optional stops, safe restarts, load monitoring.",
     order      : 6
   },
+  // CUSTOM: part-loop mode group (bar feeder)
+  partLooping: {
+    title      : "Part Looping (Bar Feeder)",
+    description: "Loop the program for multiple parts when running with a bar feeder. Tracks completed parts in an Okuma common variable and jumps back to a NSTRT label until the configured count is reached.",
+    order      : 7
+  },
   output: {
     title      : "Program Output & Formatting",
     description: "Sequence numbers, header comments, operation notes, and word spacing.",
-    order      : 7
+    order      : 8
   }
 };
 
@@ -236,6 +242,15 @@ properties = {
     value      : false,
     scope      : "post"
   },
+  // CUSTOM: optional C-axis clamping (M146/M147)
+  useCAxisClamping: {
+    title      : "Use C-axis clamping (M146/M147)",
+    description: "When on, emit M147 to clamp the C-axis brake before non-simultaneous live-tool moves and M146 to release it afterwards. Most live-tool work on the LB15-II does not require the brake -- leave off unless a specific operation calls for it.",
+    group      : "spindle",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
 
   // ---- Cycles, Feeds & Arcs ----
   useCycles: {
@@ -258,6 +273,15 @@ properties = {
   useSimpleThread: {
     title      : "Use simple threading cycle",
     description: "Enable to output G33 simple threading cycle, disable to output G71 standard threading cycle.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  // CUSTOM: simplified M-cycles (drop D from G181, L from G183)
+  useSimpleCycles: {
+    title      : "Use simplified drilling cycles",
+    description: "When on, omit the D-word (total depth) from G181 drilling cycles and the L-word (retract amount) from G183 deep-drilling / chip-breaking cycles. Use on older Okuma controls that infer those values from the Z target / peck depth.",
     group      : "cycles",
     type       : "boolean",
     value      : false,
@@ -312,7 +336,7 @@ properties = {
     description: "Z offset of the bar puller grip position relative to the start of the unmachined stock (the chuck-side boundary of the deepest previously-machined feature, tracked automatically by the post). Typically zero or slightly negative to grip a hair into the unmachined region. Positive values grip further out (toward the tailstock), negative values grip closer to the chuck.",
     group      : "barPuller",
     type       : "spatial",
-    value      : 0,
+    value      : -0.5,
     scope      : "post"
   },
 
@@ -375,6 +399,44 @@ properties = {
     type       : "integer",
     range      : [0, 1013],
     value      : 0,
+    scope      : "post"
+  },
+
+  // ---- Part Looping (Bar Feeder) ----
+  // CUSTOM: part-loop mode (bar feeder)
+  loopForMultipleParts: {
+    title      : "Loop program for multiple parts",
+    description: "When on, the program initializes a completed-parts counter to 0 at the top, labels the start of the cutting sequence with NSTRT, and immediately before M30 increments the counter and conditionally GOTO NSTRT until the target part count is reached. Use with a bar feeder.",
+    group      : "partLooping",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  partCounterVariable: {
+    title      : "Part counter variable (V#)",
+    description: "Okuma common variable number used as the completed-parts counter. Initialized to 0 at the top of the program and incremented at the end of each part.",
+    group      : "partLooping",
+    type       : "integer",
+    range      : [1, 200],
+    value      : 19,
+    scope      : "post"
+  },
+  partsPerBar: {
+    title      : "Parts per bar (0 = use variable)",
+    description: "Hardcoded target part count to bake into the program. When set to 0, the target is read at runtime from the variable configured below instead, and a comment is emitted at the top of the program telling the operator which variable to set. When greater than 0, this value is used directly and the variable is ignored.",
+    group      : "partLooping",
+    type       : "integer",
+    range      : [0, 9999],
+    value      : 0,
+    scope      : "post"
+  },
+  partsPerBarVariable: {
+    title      : "Parts-per-bar variable (V#)",
+    description: "Okuma common variable number whose value is read at runtime as the target part count. Only used when 'Parts per bar' above is 0. The operator must set this variable at the control before running the program. Must be different from the part counter variable.",
+    group      : "partLooping",
+    type       : "integer",
+    range      : [1, 200],
+    value      : 20,
     scope      : "post"
   },
 
@@ -601,6 +663,11 @@ var lastSpindleMode = undefined;
 var lastEmittedGear = undefined;
 var lastSpindleSpeed = 0;
 var lastSpindleDirection = undefined;
+// CUSTOM: M109/M110 state tracker. true = C-axis engaged (M110 / live-tool
+// mode), false = C-axis disengaged (M109 / turning mode). Program is assumed
+// to start with the C-axis disengaged. Updated only by cAxisEnableWord() /
+// cAxisDisableWord() so it always reflects what was actually emitted.
+var cAxisIsEngaged = false;
 var operationNeedsSafeStart = false; // used to convert blocks to optional for safeStartAllOperations
 var vlmon; // load monitoring variable
 var previousMaximumSpeed = 0;
@@ -1169,7 +1236,12 @@ function onOpen() {
     }
   }
 
-  writeBlock(gAbsIncModal.format(90), gCycleModal.format(80));
+  // CUSTOM: include G180 (live-tool cycle cancel) alongside G80 on the setup
+  // line, instead of letting the first onCycleEnd before a G181 emit a stray
+  // G180. Two calls to gCycleModal.format() in the same block: the first emits
+  // G80 and sets the modal to 80, the second emits G180 and sets it to 180.
+  // The modal ends primed at 180 so the first pre-G181 onCycleEnd is a no-op.
+  writeBlock(gAbsIncModal.format(90), gCycleModal.format(80), gCycleModal.format(180));
   if (getProperty("useShortestDirection")) {
     writeBlock(mFormat.format(960));
   }
@@ -1208,6 +1280,10 @@ function onOpen() {
   machineState.mainSpindleIsActive = false;
   machineState.subSpindleIsActive = false;
   machineState.liveToolIsActive = false;
+  // CUSTOM: program is assumed to start with the C-axis disengaged (M109 /
+  // turning mode). The cAxisEnableWord() / cAxisDisableWord() helpers keep
+  // this flag in sync with what was actually emitted.
+  cAxisIsEngaged = false;
 
   // CUSTOM: emit initial home retract so the program starts at the home position.
   // The redundant writeRetract(X, Z) inside onSection's "Position all axes at home"
@@ -1215,6 +1291,29 @@ function onOpen() {
   gMotionModal.reset();
   writeRetract(X);
   writeRetract(Z);
+
+  // CUSTOM: part-loop mode -- initialize the completed-parts counter to 0 and
+  // emit the NSTRT label that the end-of-program GOTO jumps back to. Everything
+  // above this point (program header, G50 Smax, initial home retract) runs once;
+  // every section's NC will be emitted after NSTRT and therefore re-runs each
+  // iteration.
+  if (getProperty("loopForMultipleParts")) {
+    var loopCounterVar = getProperty("partCounterVariable");
+    var loopPartsCount = getProperty("partsPerBar");
+    var loopPartsVar = getProperty("partsPerBarVariable");
+    if (loopPartsCount == 0 && loopCounterVar == loopPartsVar) {
+      error(localize("Part counter variable and parts-per-bar variable must be different when 'Parts per bar' is 0."));
+      return;
+    }
+    writeln("");
+    if (loopPartsCount == 0) {
+      writeComment("SET V" + loopPartsVar + " TO NUMBER OF PARTS PER BAR");
+    } else {
+      writeComment("PROGRAM WILL LOOP " + loopPartsCount + " TIMES");
+    }
+    writeln("V" + loopCounterVar + "=0");
+    writeln("NSTRT " + formatComment("PART LOOP START"));
+  }
 }
 
 function onComment(message) {
@@ -1735,10 +1834,9 @@ function onSection() {
           writeTurningModeEntry(); // CUSTOM: configurable G270 / M109 / none
         } else {
           onCommand(COMMAND_UNLOCK_MULTI_AXIS);
-          if ((tempSpindle != SPINDLE_LIVE) && !getProperty("optimizeCAxisSelect")) {
-            cAxisEngageModal.reset();
-            writeBlock(cAxisEngageModal.format(getCode("DISABLE_C_AXIS", getSpindle(PART))));
-          }
+          // CUSTOM: dead-code cAxisEngageModal.reset()+force-emit removed --
+          // the inner condition (tempSpindle != SPINDLE_LIVE) is impossible
+          // here (we're inside the tempSpindle == SPINDLE_LIVE else-branch).
         }
       } else {
         // CUSTOM: stop the main spindle too so the M05 lands inside the
@@ -1892,11 +1990,13 @@ function onSection() {
           return;
         }
         gPlaneModal.reset();
-        if (!getProperty("optimizeCAxisSelect")) {
-          cAxisEngageModal.reset();
-        }
+        // CUSTOM: M110 emission is deduped via cAxisIsEngaged. cAxisEnableWord()
+        // returns "M110" (and flips the flag) when the C-axis isn't yet engaged,
+        // and "" otherwise -- so consecutive live-tool sections on different
+        // tools don't re-emit M110, but a turning->live transition does.
+        // writeBlock skips the empty string cleanly.
         // writeBlock(wcsOut, mFormat.format(getCode("SET_SPINDLE_FRAME", getSpindle(PART))));
-        writeBlock(feedMode, gPlaneModal.format(plane), cAxisEngageModal.format(getCode("ENABLE_C_AXIS", getSpindle(PART))));
+        writeBlock(feedMode, gPlaneModal.format(plane), cAxisEnableWord());
         //writeBlock(gMotionModal.format(0), gFormat.format(28), "H" + abcFormat.format(0)); // unwind c-axis
         if (!machineState.usePolarInterpolation && !machineState.usePolarCoordinates && !currentSection.isMultiAxis()) {
           onCommand(COMMAND_LOCK_MULTI_AXIS);
@@ -1910,9 +2010,9 @@ function onSection() {
       // forceUnlockMultiAxis();
       // writeBlock(cAxisEngageModal.format(getCode("UNLOCK_MULTI_AXIS", getSpindle(PART))));
       gPlaneModal.reset();
-      if (!getProperty("optimizeCAxisSelect")) {
-        cAxisEngageModal.reset();
-      }
+      // CUSTOM: cAxisEngageModal.reset() removed -- writeTurningModeEntry uses
+      // the cAxisIsEngaged state tracker for dedup, so a reset here would just
+      // force a redundant M109 on every turning section start.
       // writeBlock(wcsOut, mFormat.format(getSpindle(PART) == SPINDLE_SUB ? 83 : 80));
       writeTurningModeEntry(); // CUSTOM: configurable G270 / M109 / none
       writeBlock(feedMode, gPlaneModal.format(18));
@@ -1951,7 +2051,9 @@ function onSection() {
   if (insertToolCall || operationNeedsSafeStart) {
     writeStartBlocks(insertToolCall, function () {
       forceWorkPlane();
-      cAxisEngageModal.reset();
+      // CUSTOM: cAxisEngageModal.reset() removed -- dedup via cAxisIsEngaged
+      // state tracker; a reset here would force a spurious M109/M110 on every
+      // tool change regardless of actual C-axis state.
       retracted = insertToolCall;
       onCommand(COMMAND_COOLANT_OFF);
 
@@ -3004,9 +3106,13 @@ function writeToolBarPullerCycle() {
   zOutput.reset();
   writeBlock(gFeedModeModal.format(getCode("FEED_MODE_UNIT_MIN", getSpindle(TOOL))));
 
-  // Rapid to approach position: X at stock diameter, then Z at the computed grip position.
-  writeBlock(gMotionModal.format(0), xOutput.format(approachRadius));
+  // Rapid to approach position: Z first to the computed grip position, then X to stock diameter.
+  // Z-first is safe because we're starting from home (well clear of the bar in X) and
+  // approaching the grip from outside the stock diameter -- moving Z first puts the
+  // fingers axially in position before closing in radially, which avoids any chance
+  // of dragging the puller body along the bar OD during the approach.
   writeBlock(gMotionModal.format(0), zOutput.format(gripZ));
+  writeBlock(gMotionModal.format(0), xOutput.format(approachRadius));
 
   // Feed onto the bar (X0 = ideal grip position on the fingers).
   writeBlock(gMotionModal.format(1), xOutput.format(0), feedOutput.format(pullFeed));
@@ -3424,7 +3530,8 @@ function onCyclePoint(x, y, z) {
       writeBlock(
         gCycleModal.format(machineState.axialCenterDrilling ? 74 : 181),
         getCommonCycle(x, y, z, rapto),
-        "D" + spatialFormat.format(cycle.depth + cycle.retract - cycle.stock),
+        // CUSTOM: simplified G181 omits the D (total depth) word
+        getProperty("useSimpleCycles") ? "" : ("D" + spatialFormat.format(cycle.depth + cycle.retract - cycle.stock)),
         getFeed(cycle.feedrate)
       );
       break;
@@ -3448,7 +3555,8 @@ function onCyclePoint(x, y, z) {
         gCycleModal.format(machineState.axialCenterDrilling ? 74 : 183),
         getCommonCycle(x, y, z, rapto),
         "D" + spatialFormat.format(cycle.incrementalDepth),
-        "L" + spatialFormat.format(cycle.incrementalDepth),
+        // CUSTOM: simplified G183 omits the L (retract amount) word
+        getProperty("useSimpleCycles") ? "" : ("L" + spatialFormat.format(cycle.incrementalDepth)),
         P > 0 ? eOutput.format(P) : "",
         getFeed(cycle.feedrate)
       );
@@ -3461,7 +3569,8 @@ function onCyclePoint(x, y, z) {
         gCycleModal.format(machineState.axialCenterDrilling ? 74 : 183),
         getCommonCycle(x, y, z, rapto),
         "D" + spatialFormat.format(cycle.incrementalDepth),
-        cycle.accumulatedDepth > 0 ? "L" + spatialFormat.format(cycle.accumulatedDepth) : "",
+        // CUSTOM: simplified G183 omits the L (retract amount) word
+        getProperty("useSimpleCycles") ? "" : (cycle.accumulatedDepth > 0 ? "L" + spatialFormat.format(cycle.accumulatedDepth) : ""),
         conditional(P > 0, eOutput.format(P)),
         getFeed(cycle.feedrate)
       );
@@ -3730,9 +3839,39 @@ function writeTurningModeEntry() {
   if (mode == "g270") {
     writeBlock(gPlaneModal.format(getCode("ENABLE_TURNING", getSpindle(PART))));
   } else if (mode == "m109") {
-    writeBlock(mFormat.format(getCode("DISABLE_C_AXIS", getSpindle(PART))));
+    // CUSTOM: M109 emission is deduped via the cAxisIsEngaged state tracker.
+    // If we're already in M109 (turning mode), this is a no-op. Otherwise we
+    // emit M109 and flip the flag. End-of-live-section onSectionEnd is the
+    // normal emission site; this call (and the one in onClose) is a safety
+    // net that fires only when something left the C-axis engaged.
+    var w = cAxisDisableWord();
+    if (w) {
+      writeBlock(w);
+    }
   }
   // "none" -> emit nothing
+}
+
+// CUSTOM: M109/M110 emission helpers. Return the formatted M-word when a
+// state change is needed and update the cAxisIsEngaged flag; return "" when
+// the C-axis is already in the requested state. Callers can use the returned
+// string inline in a writeBlock(...) to combine it with feed-mode / plane /
+// other words (which is how the live-tool branch emits "G95 G19 M110" on one
+// line). When the returned word is empty the writeBlock skips it cleanly.
+function cAxisEnableWord() {
+  if (cAxisIsEngaged) {
+    return "";
+  }
+  cAxisIsEngaged = true;
+  return mFormat.format(getCode("ENABLE_C_AXIS", getSpindle(PART)));
+}
+
+function cAxisDisableWord() {
+  if (!cAxisIsEngaged) {
+    return "";
+  }
+  cAxisIsEngaged = false;
+  return mFormat.format(getCode("DISABLE_C_AXIS", getSpindle(PART)));
 }
 
 function startSpindle(tappingMode, forceRPMMode, initialPosition) {
@@ -3818,10 +3957,16 @@ function onCommand(command) {
     setCoolant(tool.coolant);
     break;
   case COMMAND_LOCK_MULTI_AXIS:
-    writeBlock(cAxisBrakeModal.format(getCode("LOCK_MULTI_AXIS", getSpindle(PART))));
+    // CUSTOM: optional C-axis clamping -- skip M147 when disabled
+    if (getProperty("useCAxisClamping")) {
+      writeBlock(cAxisBrakeModal.format(getCode("LOCK_MULTI_AXIS", getSpindle(PART))));
+    }
     break;
   case COMMAND_UNLOCK_MULTI_AXIS:
-    writeBlock(cAxisBrakeModal.format(getCode("UNLOCK_MULTI_AXIS", getSpindle(PART))));
+    // CUSTOM: optional C-axis clamping -- skip M146 when disabled
+    if (getProperty("useCAxisClamping")) {
+      writeBlock(cAxisBrakeModal.format(getCode("UNLOCK_MULTI_AXIS", getSpindle(PART))));
+    }
     break;
   case COMMAND_START_CHIP_TRANSPORT:
     writeBlock(mFormat.format(244));
@@ -3944,15 +4089,17 @@ function ejectPart() {
   // writeBlock(gMotionModal.format(0), gFormat.format(28), gFormat.format(53), "B" + abcFormat.format(0)); // retract bar feeder
   writeRetract(X); // Position all axes to home position
   writeRetract(Z);
-  writeBlock(mFormat.format(getCode("UNLOCK_MULTI_AXIS", getSpindle(PART))));
-  if (!getProperty("optimizeCAxisSelect")) {
-    cAxisEngageModal.reset();
+  // CUSTOM: optional C-axis clamping -- skip M146 when disabled
+  if (getProperty("useCAxisClamping")) {
+    writeBlock(mFormat.format(getCode("UNLOCK_MULTI_AXIS", getSpindle(PART))));
   }
+  // CUSTOM: emit M109 only if the C-axis is currently engaged (dedup via
+  // cAxisIsEngaged state tracker). Replaces the prior reset+force-emit pair.
   writeBlock(
     gFeedModeModal.format(getCode("FEED_MODE_UNIT_MIN", getSpindle(TOOL))),
     // gFormat.format(53 + currentWorkOffset),
     // gPlaneModal.format(getG17Code()),
-    cAxisEngageModal.format(getCode("DISABLE_C_AXIS", getSpindle(PART)))
+    cAxisDisableWord()
   );
   // setCoolant(COOLANT_THROUGH_TOOL);
   gSpindleModeModal.reset();
@@ -4022,6 +4169,26 @@ function onSectionEnd() {
     writeBlock(gMotionModal.format(0), yOutput.format(0));
     writeBlock(gPolarModal.format(getCode("DISABLE_Y_AXIS", true)));
     yOutput.disable();
+  }
+
+  // CUSTOM: exit C-axis mode (M109) at the end of any live-tool section,
+  // unless the next section uses the same tool -- in which case we stay in
+  // M110 across the boundary to avoid a pointless M109/M110 ping-pong.
+  // The check uses the cAxisIsEngaged state tracker (set true by the
+  // cAxisEnableWord() call in the live-tool branch of onSection) rather than
+  // getSpindle(TOOL), which can return the next section's spindle at
+  // onSectionEnd time and silently skip the emission.
+  if (cAxisIsEngaged && !machineState.stockTransferIsActive) {
+    var keepCAxisActive = false;
+    if ((getCurrentSectionId() + 1) < getNumberOfSections()) {
+      var nextSec = getNextSection();
+      if (nextSec && nextSec.getTool().number == tool.number) {
+        keepCAxisActive = true;
+      }
+    }
+    if (!keepCAxisActive) {
+      writeBlock(cAxisDisableWord());
+    }
   }
 
   // CUSTOM: if the next section is a tool-based bar pull, emit the wrap-up
@@ -4109,5 +4276,19 @@ function onClose() {
 
   writeln("");
   onCommand(COMMAND_OPEN_DOOR);
+
+  // CUSTOM: part-loop mode -- increment the completed-parts counter and, if more
+  // parts are needed, jump back to NSTRT. The target is either a hardcoded
+  // integer (when 'Parts per bar' > 0) or a runtime V<n> reference. The loop
+  // header / counter init were emitted at the end of onOpen.
+  if (getProperty("loopForMultipleParts")) {
+    var loopCounterVar = getProperty("partCounterVariable");
+    var loopPartsCount = getProperty("partsPerBar");
+    var loopPartsVar = getProperty("partsPerBarVariable");
+    var loopTarget = (loopPartsCount > 0) ? loopPartsCount : ("V" + loopPartsVar);
+    writeln("V" + loopCounterVar + "=V" + loopCounterVar + "+1");
+    writeln("IF[V" + loopCounterVar + " LT " + loopTarget + "] GOTO NSTRT");
+  }
+
   writeBlock(mFormat.format(30)); // stop program, spindle stop, coolant off
 }
