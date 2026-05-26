@@ -28,3 +28,5 @@ Desktop.ini
 
 # Reference documents kept locally but not versioned
 *.pdf
+
+node_modules/*

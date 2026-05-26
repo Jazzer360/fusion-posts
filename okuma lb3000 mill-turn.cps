@@ -341,15 +341,8 @@ properties = {
   },
 
   // ---- Stock Handling ----
-  useTailStock: {
-    title       : "Use tailstock",
-    description : "Specifies whether to use the tailstock or not.",
-    group       : "stockHandling",
-    type        : "boolean",
-    presentation: "yesno",
-    value       : false,
-    scope       : "post"
-  },
+  // CUSTOM: useTailStock removed -- tailstock engagement is driven entirely
+  // by the per-operation "Use tailstock" checkbox in Fusion (currentSection.tailstock).
   usePartCatcher: {
     title      : "Use part catcher",
     description: "Specifies whether part catcher code should be output.",
@@ -1848,6 +1841,15 @@ function onSection() {
       }
       onCommand(COMMAND_COOLANT_OFF);
     }
+    // CUSTOM: tailstock disengage lands in the prior section's wrap-up, BEFORE
+    // the retract / M01, instead of inside the new section's body after the
+    // header. Emit M22 when the prior section had it engaged AND the upcoming
+    // section either doesn't want it or is incompatible (sub-spindle, axial-
+    // center drilling, axial live-tool). When the next section ALSO wants the
+    // tailstock and is compatible, leave it engaged across the boundary.
+    if (machineState.tailstockIsActive && (!currentSection.tailstock || currentSectionTailstockIncompatible())) {
+      writeBlock(tailStockModal.format(getCode("TAILSTOCK_OFF", SPINDLE_MAIN)));
+    }
     writeRetract(X);
     writeRetract(Z);
 
@@ -2107,18 +2109,17 @@ function onSection() {
     writeComment("MANUAL TOOL CHANGE TO " + formatTool(tool, false));
   }
 
-  // Engage tailstock
-  if (getProperty("useTailStock")) {
-    if (machineState.axialCenterDrilling || (getSpindle(PART) == SPINDLE_SUB) ||
-       ((getSpindle(TOOL) == SPINDLE_LIVE) && (machineState.machiningDirection == MACHINING_DIRECTION_AXIAL))) {
-      if (currentSection.tailstock) {
-        warning(localize("Tail stock is not supported for secondary spindle or Z-axis milling."));
-      }
-      if (machineState.tailstockIsActive) {
-        writeBlock(tailStockModal.format(getCode("TAILSTOCK_OFF", SPINDLE_MAIN)));
-      }
-    } else {
-      writeBlock(tailStockModal.format(currentSection.tailstock ? getCode("TAILSTOCK_ON", SPINDLE_MAIN) : getCode("TAILSTOCK_OFF", SPINDLE_MAIN)));
+  // CUSTOM: tailstock engage only. The disengage (M22) is emitted in the
+  // prior section's wrap-up (in the wrap-up block above, or in the bar-pull
+  // prelude in onSectionEnd, or in onClose for the final section) so it lands
+  // before the closing M01 instead of after this section's header. The
+  // per-operation tailstock checkbox in Fusion (currentSection.tailstock)
+  // drives engagement -- no post property gate.
+  if (currentSection.tailstock) {
+    if (currentSectionTailstockIncompatible()) {
+      warning(localize("Tail stock is not supported for secondary spindle or Z-axis milling."));
+    } else if (!machineState.tailstockIsActive) {
+      writeBlock(tailStockModal.format(getCode("TAILSTOCK_ON", SPINDLE_MAIN)));
     }
   }
 
@@ -3646,6 +3647,13 @@ function onCycleEnd() {
     skipThreading = true;
     return;
   }
+  // CUSTOM: G180 cancels the live-tool drilling-cycle family (G181/G183), not
+  // the turning thread cycle (G71/G33). Emitting G180 after a thread cycle
+  // would leave a stray code on its own line after the G71 body. Skip it.
+  if (cycleType == "thread-turning") {
+    skipThreading = true;
+    return;
+  }
   if (!cycleExpanded && !machineState.stockTransferIsActive) {
     writeBlock(gCycleModal.format(180));
     gMotionModal.reset();
@@ -3872,6 +3880,17 @@ function cAxisDisableWord() {
   }
   cAxisIsEngaged = false;
   return mFormat.format(getCode("DISABLE_C_AXIS", getSpindle(PART)));
+}
+
+// CUSTOM: returns true if the current section is incompatible with the tailstock
+// (sub-spindle work, axial-center drilling, or axial live-tool milling -- all
+// of which need the Z-axis path to the spindle face clear). Mirrors the
+// conditions in the old engage block. Relies on machineState having been
+// updated by updateMachiningMode(currentSection) earlier in onSection.
+function currentSectionTailstockIncompatible() {
+  return machineState.axialCenterDrilling ||
+    (getSpindle(PART) == SPINDLE_SUB) ||
+    ((getSpindle(TOOL) == SPINDLE_LIVE) && (machineState.machiningDirection == MACHINING_DIRECTION_AXIAL));
 }
 
 function startSpindle(tappingMode, forceRPMMode, initialPosition) {
@@ -4203,6 +4222,11 @@ function onSectionEnd() {
     if (nextSection && nextSection.hasCycle && nextSection.hasCycle("secondary-spindle-pull")) {
       onCommand(COMMAND_STOP_SPINDLE);
       onCommand(COMMAND_COOLANT_OFF);
+      // CUSTOM: release the tailstock here too (bar-pull doesn't use it, and
+      // we want M22 inside the prior section's wrap-up ahead of M01).
+      if (machineState.tailstockIsActive) {
+        writeBlock(tailStockModal.format(getCode("TAILSTOCK_OFF", SPINDLE_MAIN)));
+      }
       writeRetract(X);
       writeRetract(Z);
       onCommand(COMMAND_OPTIONAL_STOP);
@@ -4211,7 +4235,17 @@ function onSectionEnd() {
   }
 
   // cancel SFM mode to preserve spindle speed
-  if ((tool.getSpindleMode() == SPINDLE_CONSTANT_SURFACE_SPEED) && !machineState.stockTransferIsActive) {
+  // CUSTOM: skip this block when the spindle has just been stopped as part of
+  // a bar-pull transition. Either (a) we just emitted the bar-pull prelude
+  // above (M5/M9/retract/M01 -- spindle is intentionally off and we must not
+  // restart it before the bar-pull body runs), or (b) the current section is
+  // itself a tool-based bar pull that already wrote its full wrap-up
+  // (writeToolBarPullerCycle ends at home with M01 -- restarting the spindle
+  // here would put a stray G97 S... M3 after the M01).
+  if ((tool.getSpindleMode() == SPINDLE_CONSTANT_SURFACE_SPEED) &&
+      !machineState.stockTransferIsActive &&
+      !barPullPreludeEmitted &&
+      !barPullWroteOwnWrapup) {
     startSpindle(false, true, getFramePosition(currentSection.getFinalPosition()));
   }
 

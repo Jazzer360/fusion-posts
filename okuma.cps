@@ -210,7 +210,7 @@ properties = {
       {title:"HA", id:"A"},
       {title:"HC", id:"C"}
     ],
-    value: "toolOffset",
+    value: "A",
     scope: "post"
   },
   toolLifeMonitor: {
@@ -612,7 +612,7 @@ var settings = {
     callBlock              : {files:["CALL "], embedded:["CALL "]} // specifies the command for calling a subprogram followed by the subprogram number
   },
   comments: {
-    permittedCommentChars: " abcdefghijklmnopqrstuvwxyz0123456789.,=_-:+/*#", // letters are not case sensitive, use option 'outputFormat' below. Set to 'undefined' to allow any character
+    permittedCommentChars: " abcdefghijklmnopqrstuvwxyz0123456789.,=_-:+/*#[]", // letters are not case sensitive, use option 'outputFormat' below. Set to 'undefined' to allow any character
     prefix               : "(", // specifies the prefix for the comment
     suffix               : ")", // specifies the suffix for the comment
     outputFormat         : "ignoreCase", // can be set to "upperCase", "lowerCase" and "ignoreCase". Set to "ignoreCase" to write comments without upper/lower case formatting
@@ -845,8 +845,25 @@ function getTombstoneOpeningABC() {
   return new Vector(v[0], v[1], v[2]);
 }
 
+// CUSTOM: pattern instance index map — built in onOpen, consumed in onSection.
+// Maps String(patternId) -> [sectionId, ...] in section order.
+var wcsPatternIndex;
+
 function onOpen() {
   circularOutputAccuracy = xyzFormat.getNumberOfDecimals();
+  // CUSTOM: index all patterned sections (multi-WCS and other patterns) so onSection
+  // can append [instance/total] to the operation comment.
+  wcsPatternIndex = {};
+  var _pn = getNumberOfSections();
+  for (var _pi = 0; _pi < _pn; ++_pi) {
+    var _ps = getSection(_pi);
+    var _pid = _ps.getPatternId();
+    if (_pid !== 0) {
+      var _pk = String(_pid);
+      if (!wcsPatternIndex[_pk]) { wcsPatternIndex[_pk] = []; }
+      wcsPatternIndex[_pk].push(_ps.getId());
+    }
+  }
   // define and enable machine configuration
   receivedMachineConfiguration = machineConfiguration.isReceived();
   if (typeof defineMachine == "function") {
@@ -970,7 +987,23 @@ function onSection() {
   executeManualNC();
 
   writeln("");
-  writeComment(getParameter("operation-comment", ""));
+  var _opComment = getParameter("operation-comment", "");
+  var _opPid = currentSection.getPatternId();
+  if (_opPid !== 0) {
+    var _opGroup = wcsPatternIndex[String(_opPid)];
+    if (_opGroup && _opGroup.length > 1) {
+      _opComment += " [" + (_opGroup.indexOf(currentSection.getId()) + 1) + "/" + _opGroup.length + "]";
+    }
+  }
+  writeComment(_opComment);
+  if (insertToolCall && currentSection.getTool()) {
+    var descParts = [];
+    if (tool.description) { descParts.push(tool.description); }
+    if (tool.vendor)      { descParts.push(tool.vendor); }
+    if (tool.productId)   { descParts.push(tool.productId); }
+    if (descParts.length > 0) { writeComment(descParts.join(" - ")); }
+    writeComment(getToolComment(tool));
+  }
 
   if (getProperty("showNotes") && hasParameter("notes")) {
     writeSectionNotes();
@@ -1051,6 +1084,710 @@ function onSection() {
   if (subprogramsAreSupported()) {
     subprogramDefine(initialPosition, abc); // define subprogram
   }
+}
+
+function toTitleCase(str) {
+  var words = str.split(" ");
+  for (var i = 0; i < words.length; i++) {
+    if (words[i].length > 0) {
+      words[i] = words[i].charAt(0).toUpperCase() + words[i].slice(1);
+    }
+  }
+  return words.join(" ");
+}
+
+// Returns the friendly name from a diameter-keyed table (drills, end mills).
+// Strips a trailing " in" from names so fractional names read cleanly.
+function getFriendlySize(table, targetDecimal) {
+  if (!table || table.length === 0) return null;
+  var key = (unit == MM) ? "mm" : "inch";
+  var tolerance = Math.max(targetDecimal * 0.005, (unit == MM) ? 0.005 : 0.0002);
+  var best = null;
+  var bestDiff = tolerance;
+  for (var i = 0; i < table.length; i++) {
+    var diff = Math.abs(targetDecimal - table[i][key]);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = table[i];
+    }
+  }
+  return best ? best.name.replace(/ in$/, "") : null;
+}
+
+// Returns the friendly name from a tap table, matching on both diameter and pitch.
+function getFriendlyTapSize(table, targetDiameter, targetPitch) {
+  if (!table || table.length === 0) return null;
+  var diamKey = (unit == MM) ? "mm" : "inch";
+  var diamTolerance = Math.max(targetDiameter * 0.005, (unit == MM) ? 0.005 : 0.0002);
+  for (var i = 0; i < table.length; i++) {
+    if (Math.abs(targetDiameter - table[i][diamKey]) > diamTolerance) continue;
+    // In inch mode compare pitch to 1/tpi; in mm mode compare pitch directly.
+    var entryPitch = (unit == MM) ? table[i].pitch : (1.0 / table[i].tpi);
+    var pitchTolerance = Math.max(entryPitch * 0.01, (unit == MM) ? 0.002 : 0.00005);
+    if (Math.abs(targetPitch - entryPitch) <= pitchTolerance) {
+      return table[i].name;
+    }
+  }
+  return null;
+}
+
+// Formats a size value with xyzFormat but guarantees at least one decimal place.
+// Handles three cases from FORMAT_REAL: "2" (no dot), "2." (trailing dot), "2.5" (ok).
+function formatSizeDecimal(val) {
+  var s = xyzFormat.format(val);
+  if (s.indexOf(".") === -1) { return s + ".0"; }
+  if (s.charAt(s.length - 1) === ".") { return s + "0"; }
+  return s;
+}
+
+// Pads string s with trailing spaces to at least width n.
+function padRight(s, n) {
+  while (s.length < n) { s += " "; }
+  return s;
+}
+
+// Returns a structured object with all displayable tool attributes split into fields.
+// Used by both getToolComment (flowing per-section comment) and the aligned header tool list.
+function getToolComponents(tool) {
+  var t = tool.type;
+
+  // Friendly size name lookup
+  var friendly = null;
+  if (t == TOOL_DRILL || t == TOOL_DRILL_CENTER || t == TOOL_DRILL_SPOT ||
+      t == TOOL_BORING_BAR || t == TOOL_COUNTER_BORE || t == TOOL_REAMER) {
+    friendly = getFriendlySize(sizeTables.drill, tool.diameter);
+  } else if (t == TOOL_TAP_RIGHT_HAND || t == TOOL_TAP_LEFT_HAND) {
+    friendly = getFriendlyTapSize(sizeTables.tap, tool.diameter, tool.getThreadPitch());
+  } else {
+    friendly = getFriendlySize(sizeTables.endmill, tool.diameter);
+  }
+
+  var decimal = formatSizeDecimal(tool.diameter);
+
+  // Display type name — abbreviate tap handedness for brevity
+  var typeName;
+  if (t == TOOL_TAP_RIGHT_HAND) {
+    typeName = "Tap RH";
+  } else if (t == TOOL_TAP_LEFT_HAND) {
+    typeName = "Tap LH";
+  } else {
+    typeName = toTitleCase(getToolTypeName(t));
+  }
+
+  // Extras — ordered attribute tokens (angle, CR, flute count, pitch, flute length)
+  var extras = [];
+
+  var showAngle = (t == TOOL_DRILL        || t == TOOL_DRILL_CENTER    || t == TOOL_DRILL_SPOT ||
+                   t == TOOL_COUNTER_SINK || t == TOOL_MILLING_CHAMFER ||
+                   t == TOOL_MILLING_TAPERED || t == TOOL_MILLING_DOVETAIL);
+  if (tool.taperAngle > 0 && tool.taperAngle < Math.PI && showAngle) {
+    extras.push(taperFormat.format(tool.taperAngle) + "deg");
+  }
+
+  if (t == TOOL_MILLING_FACE && tool.taperAngle > 0 && tool.taperAngle < Math.PI / 2) {
+    extras.push("LA=" + taperFormat.format(Math.PI / 2 - tool.taperAngle) + "deg");
+  }
+
+  if (tool.cornerRadius && t != TOOL_MILLING_END_BALL && t != TOOL_MILLING_LOLLIPOP) {
+    extras.push("CR=" + formatSizeDecimal(tool.cornerRadius));
+  }
+
+  if (t == TOOL_MILLING_END_FLAT   || t == TOOL_MILLING_END_BALL  ||
+      t == TOOL_MILLING_END_BULLNOSE || t == TOOL_MILLING_FACE    ||
+      t == TOOL_MILLING_SLOT        || t == TOOL_MILLING_RADIUS   ||
+      t == TOOL_MILLING_CHAMFER     || t == TOOL_MILLING_DOVETAIL ||
+      t == TOOL_MILLING_TAPERED     || t == TOOL_MILLING_LOLLIPOP ||
+      t == TOOL_MILLING_FORM) {
+    if (tool.numberOfFlutes > 0) { extras.push(tool.numberOfFlutes + "FL"); }
+  }
+
+  if (t == TOOL_MILLING_THREAD && tool.getThreadPitch() > 0) {
+    if (unit == MM) {
+      extras.push("P" + formatSizeDecimal(tool.getThreadPitch()));
+    } else {
+      extras.push(Math.round(1.0 / tool.getThreadPitch()) + " TPI");
+    }
+  }
+
+  if (tool.fluteLength > 0) {
+    if (t == TOOL_MILLING_END_FLAT   || t == TOOL_MILLING_END_BALL  ||
+        t == TOOL_MILLING_END_BULLNOSE || t == TOOL_MILLING_FACE    ||
+        t == TOOL_MILLING_SLOT        || t == TOOL_MILLING_RADIUS   ||
+        t == TOOL_MILLING_CHAMFER     || t == TOOL_MILLING_DOVETAIL ||
+        t == TOOL_MILLING_TAPERED     || t == TOOL_MILLING_LOLLIPOP ||
+        t == TOOL_MILLING_THREAD      || t == TOOL_MILLING_FORM) {
+      extras.push("DOC=" + formatSizeDecimal(tool.fluteLength));
+    } else if (t == TOOL_DRILL        || t == TOOL_DRILL_CENTER   || t == TOOL_DRILL_SPOT ||
+               t == TOOL_COUNTER_SINK || t == TOOL_COUNTER_BORE   || t == TOOL_REAMER    ||
+               t == TOOL_BORING_BAR) {
+      extras.push("FL=" + formatSizeDecimal(tool.fluteLength));
+    }
+  }
+
+  return {
+    tStr    : "T" + toolFormat.format(tool.number),
+    friendly: friendly,
+    decimal : decimal,
+    typeName: typeName,
+    extras  : extras
+  };
+}
+
+// Returns a flowing single-line tool comment for use in per-section headers.
+// Format: <size> [<dec>] <Type> <angle> <CR> <nFL> <DOC/FL> - T<n>
+function getToolComment(tool) {
+  var c = getToolComponents(tool);
+  var sizeStr = c.friendly ? (c.friendly + " [" + c.decimal + "]") : ("[" + c.decimal + "]");
+  var parts = sizeStr + " " + c.typeName;
+  if (c.extras.length > 0) { parts += " " + c.extras.join(" "); }
+  return parts + " - " + c.tStr;
+}
+
+var sizeTables = {
+  "drill": [
+    { "name": "#107"      , "inch": 0.0019, "mm": 0.0483 },
+    { "name": "0.05 mm"   , "inch": 0.002 , "mm": 0.05 },
+    { "name": "#106"      , "inch": 0.0023, "mm": 0.0584 },
+    { "name": "#105"      , "inch": 0.0027, "mm": 0.0686 },
+    { "name": "#104"      , "inch": 0.0031, "mm": 0.0787 },
+    { "name": "#103"      , "inch": 0.0035, "mm": 0.0889 },
+    { "name": "#102"      , "inch": 0.0039, "mm": 0.0991 },
+    { "name": "0.1 mm"    , "inch": 0.0039, "mm": 0.0991 },
+    { "name": "#101"      , "inch": 0.0043, "mm": 0.1092 },
+    { "name": "#100"      , "inch": 0.0047, "mm": 0.1194 },
+    { "name": "#99"       , "inch": 0.0051, "mm": 0.1295 },
+    { "name": "#98"       , "inch": 0.0055, "mm": 0.1397 },
+    { "name": "#97"       , "inch": 0.0059, "mm": 0.1499 },
+    { "name": "#96"       , "inch": 0.0063, "mm": 0.16 },
+    { "name": "#95"       , "inch": 0.0067, "mm": 0.1702 },
+    { "name": "#94"       , "inch": 0.0071, "mm": 0.1803 },
+    { "name": "#93"       , "inch": 0.0075, "mm": 0.1905 },
+    { "name": "0.2 mm"    , "inch": 0.0079, "mm": 0.2 },
+    { "name": "#92"       , "inch": 0.0079, "mm": 0.2007 },
+    { "name": "#91"       , "inch": 0.0083, "mm": 0.2108 },
+    { "name": "#90"       , "inch": 0.0087, "mm": 0.221 },
+    { "name": "#89"       , "inch": 0.0091, "mm": 0.2311 },
+    { "name": "#88"       , "inch": 0.0095, "mm": 0.2413 },
+    { "name": "#87"       , "inch": 0.01  , "mm": 0.254 },
+    { "name": "#86"       , "inch": 0.0105, "mm": 0.2667 },
+    { "name": "#85"       , "inch": 0.011 , "mm": 0.2794 },
+    { "name": "#84"       , "inch": 0.0115, "mm": 0.2921 },
+    { "name": "0.3 mm"    , "inch": 0.0118, "mm": 0.3 },
+    { "name": "#83"       , "inch": 0.012 , "mm": 0.3048 },
+    { "name": "#82"       , "inch": 0.0125, "mm": 0.3175 },
+    { "name": "#81"       , "inch": 0.013 , "mm": 0.3302 },
+    { "name": "#80"       , "inch": 0.0135, "mm": 0.3429 },
+    { "name": "#79"       , "inch": 0.0145, "mm": 0.368 },
+    { "name": "1/64 in"   , "inch": 0.0156, "mm": 0.3969 },
+    { "name": "0.4 mm"    , "inch": 0.0158, "mm": 0.4 },
+    { "name": "#78"       , "inch": 0.016 , "mm": 0.4064 },
+    { "name": "#77"       , "inch": 0.018 , "mm": 0.4572 },
+    { "name": "0.5 mm"    , "inch": 0.0197, "mm": 0.5 },
+    { "name": "#76"       , "inch": 0.02  , "mm": 0.508 },
+    { "name": "#75"       , "inch": 0.021 , "mm": 0.5334 },
+    { "name": "#74"       , "inch": 0.0225, "mm": 0.5715 },
+    { "name": "0.6 mm"    , "inch": 0.0236, "mm": 0.6 },
+    { "name": "#73"       , "inch": 0.024 , "mm": 0.6096 },
+    { "name": "#72"       , "inch": 0.025 , "mm": 0.635 },
+    { "name": "#71"       , "inch": 0.026 , "mm": 0.6604 },
+    { "name": "0.7 mm"    , "inch": 0.0276, "mm": 0.7 },
+    { "name": "#70"       , "inch": 0.028 , "mm": 0.7112 },
+    { "name": "#69"       , "inch": 0.0292, "mm": 0.7417 },
+    { "name": "#68"       , "inch": 0.031 , "mm": 0.7874 },
+    { "name": "1/32 in"   , "inch": 0.0313, "mm": 0.7938 },
+    { "name": "0.8mm"     , "inch": 0.0315, "mm": 0.8 },
+    { "name": "#67"       , "inch": 0.032 , "mm": 0.8128 },
+    { "name": "#66"       , "inch": 0.033 , "mm": 0.8382 },
+    { "name": "#65"       , "inch": 0.035 , "mm": 0.889 },
+    { "name": "0.9 mm"    , "inch": 0.0354, "mm": 0.9 },
+    { "name": "#64"       , "inch": 0.036 , "mm": 0.9144 },
+    { "name": "#63"       , "inch": 0.037 , "mm": 0.9398 },
+    { "name": "#62"       , "inch": 0.038 , "mm": 0.9652 },
+    { "name": "#61"       , "inch": 0.039 , "mm": 0.9906 },
+    { "name": "1 mm"      , "inch": 0.0394, "mm": 1 },
+    { "name": "#60"       , "inch": 0.04  , "mm": 1.016 },
+    { "name": "#59"       , "inch": 0.041 , "mm": 1.0414 },
+    { "name": "#58"       , "inch": 0.042 , "mm": 1.0668 },
+    { "name": "#57"       , "inch": 0.043 , "mm": 1.0922 },
+    { "name": "1.1 mm"    , "inch": 0.0433, "mm": 1.1 },
+    { "name": "#56"       , "inch": 0.0465, "mm": 1.1811 },
+    { "name": "3/64 in"   , "inch": 0.0469, "mm": 1.1906 },
+    { "name": "1.2 mm"    , "inch": 0.0472, "mm": 1.2 },
+    { "name": "1.3 mm"    , "inch": 0.0512, "mm": 1.3 },
+    { "name": "#55"       , "inch": 0.052 , "mm": 1.3208 },
+    { "name": "#54"       , "inch": 0.055 , "mm": 1.397 },
+    { "name": "1.4 mm"    , "inch": 0.0551, "mm": 1.4 },
+    { "name": "1.5 mm"    , "inch": 0.0591, "mm": 1.5 },
+    { "name": "#53"       , "inch": 0.0595, "mm": 1.5113 },
+    { "name": "1/16 in"   , "inch": 0.0625, "mm": 1.5875 },
+    { "name": "1.6 mm"    , "inch": 0.063 , "mm": 1.6 },
+    { "name": "#52"       , "inch": 0.0635, "mm": 1.6129 },
+    { "name": "1.7 mm"    , "inch": 0.0669, "mm": 1.7 },
+    { "name": "#51"       , "inch": 0.067 , "mm": 1.7018 },
+    { "name": "#50"       , "inch": 0.07  , "mm": 1.778 },
+    { "name": "1.8 mm"    , "inch": 0.0709, "mm": 1.8 },
+    { "name": "#49"       , "inch": 0.073 , "mm": 1.8542 },
+    { "name": "1.9 mm"    , "inch": 0.0748, "mm": 1.9 },
+    { "name": "#48"       , "inch": 0.076 , "mm": 1.9304 },
+    { "name": "5/64 in"   , "inch": 0.0781, "mm": 1.9844 },
+    { "name": "#47"       , "inch": 0.0785, "mm": 1.9939 },
+    { "name": "2 mm"      , "inch": 0.0787, "mm": 2 },
+    { "name": "#46"       , "inch": 0.081 , "mm": 2.0574 },
+    { "name": "#45"       , "inch": 0.082 , "mm": 2.0828 },
+    { "name": "2.1 mm"    , "inch": 0.0827, "mm": 2.1 },
+    { "name": "#44"       , "inch": 0.086 , "mm": 2.1844 },
+    { "name": "2.2 mm"    , "inch": 0.0866, "mm": 2.2 },
+    { "name": "#43"       , "inch": 0.089 , "mm": 2.2606 },
+    { "name": "2.3 mm"    , "inch": 0.0906, "mm": 2.3 },
+    { "name": "#42"       , "inch": 0.0935, "mm": 2.3749 },
+    { "name": "3/32 in"   , "inch": 0.0938, "mm": 2.3813 },
+    { "name": "2.4 mm"    , "inch": 0.0945, "mm": 2.4 },
+    { "name": "#41"       , "inch": 0.096 , "mm": 2.4384 },
+    { "name": "#40"       , "inch": 0.098 , "mm": 2.4892 },
+    { "name": "2.5 mm"    , "inch": 0.0984, "mm": 2.5 },
+    { "name": "#39"       , "inch": 0.0995, "mm": 2.5273 },
+    { "name": "#38"       , "inch": 0.1015, "mm": 2.5781 },
+    { "name": "2.6 mm"    , "inch": 0.1024, "mm": 2.6 },
+    { "name": "#37"       , "inch": 0.104 , "mm": 2.6416 },
+    { "name": "2.7 mm"    , "inch": 0.1063, "mm": 2.7 },
+    { "name": "#36"       , "inch": 0.1065, "mm": 2.7051 },
+    { "name": "7/64 in"   , "inch": 0.1094, "mm": 2.7781 },
+    { "name": "#35"       , "inch": 0.11  , "mm": 2.794 },
+    { "name": "2.8 mm"    , "inch": 0.1102, "mm": 2.8 },
+    { "name": "#34"       , "inch": 0.111 , "mm": 2.8194 },
+    { "name": "#33"       , "inch": 0.113 , "mm": 2.8702 },
+    { "name": "2.9 mm"    , "inch": 0.1142, "mm": 2.9 },
+    { "name": "#32"       , "inch": 0.116 , "mm": 2.9464 },
+    { "name": "3 mm"      , "inch": 0.1181, "mm": 3 },
+    { "name": "#31"       , "inch": 0.12  , "mm": 3.048 },
+    { "name": "3.1 mm"    , "inch": 0.1221, "mm": 3.1 },
+    { "name": "1/8 in"    , "inch": 0.125 , "mm": 3.175 },
+    { "name": "3.2 mm"    , "inch": 0.126 , "mm": 3.2 },
+    { "name": "#30"       , "inch": 0.1285, "mm": 3.2639 },
+    { "name": "3.3 mm"    , "inch": 0.1299, "mm": 3.3 },
+    { "name": "3.4 mm"    , "inch": 0.1339, "mm": 3.4 },
+    { "name": "#29"       , "inch": 0.136 , "mm": 3.4544 },
+    { "name": "3.5 mm"    , "inch": 0.1378, "mm": 3.5 },
+    { "name": "#28"       , "inch": 0.1405, "mm": 3.5687 },
+    { "name": "9/64 in"   , "inch": 0.1406, "mm": 3.5719 },
+    { "name": "3.6 mm"    , "inch": 0.1417, "mm": 3.6 },
+    { "name": "#27"       , "inch": 0.144 , "mm": 3.6576 },
+    { "name": "3.7 mm"    , "inch": 0.1457, "mm": 3.7 },
+    { "name": "#26"       , "inch": 0.147 , "mm": 3.7338 },
+    { "name": "#25"       , "inch": 0.1495, "mm": 3.7973 },
+    { "name": "3.8 mm"    , "inch": 0.1496, "mm": 3.8 },
+    { "name": "#24"       , "inch": 0.152 , "mm": 3.8608 },
+    { "name": "3.9 mm"    , "inch": 0.1535, "mm": 3.9 },
+    { "name": "#23"       , "inch": 0.154 , "mm": 3.9116 },
+    { "name": "5/32 in"   , "inch": 0.1563, "mm": 3.9688 },
+    { "name": "#22"       , "inch": 0.157 , "mm": 3.9878 },
+    { "name": "4 mm"      , "inch": 0.1575, "mm": 4 },
+    { "name": "#21"       , "inch": 0.159 , "mm": 4.0386 },
+    { "name": "#20"       , "inch": 0.161 , "mm": 4.0894 },
+    { "name": "4.1 mm"    , "inch": 0.1614, "mm": 4.1 },
+    { "name": "4.2 mm"    , "inch": 0.1654, "mm": 4.2 },
+    { "name": "#19"       , "inch": 0.166 , "mm": 4.2164 },
+    { "name": "4.3 mm"    , "inch": 0.1693, "mm": 4.3 },
+    { "name": "#18"       , "inch": 0.1695, "mm": 4.3053 },
+    { "name": "11/64 in"  , "inch": 0.1719, "mm": 4.3656 },
+    { "name": "#17"       , "inch": 0.173 , "mm": 4.3942 },
+    { "name": "4.4 mm"    , "inch": 0.1732, "mm": 4.4 },
+    { "name": "#16"       , "inch": 0.177 , "mm": 4.4958 },
+    { "name": "4.5 mm"    , "inch": 0.1772, "mm": 4.5 },
+    { "name": "#15"       , "inch": 0.18  , "mm": 4.572 },
+    { "name": "4.6 mm"    , "inch": 0.1811, "mm": 4.6 },
+    { "name": "#14"       , "inch": 0.182 , "mm": 4.6228 },
+    { "name": "#13"       , "inch": 0.185 , "mm": 4.699 },
+    { "name": "4.7 mm"    , "inch": 0.185 , "mm": 4.7 },
+    { "name": "3/16 in"   , "inch": 0.1875, "mm": 4.7625 },
+    { "name": "4.8 mm"    , "inch": 0.189 , "mm": 4.8 },
+    { "name": "#12"       , "inch": 0.189 , "mm": 4.8006 },
+    { "name": "#11"       , "inch": 0.191 , "mm": 4.8514 },
+    { "name": "4.9 mm"    , "inch": 0.1929, "mm": 4.9 },
+    { "name": "#10"       , "inch": 0.1935, "mm": 4.9149 },
+    { "name": "#9"        , "inch": 0.196 , "mm": 4.9784 },
+    { "name": "5 mm"      , "inch": 0.1969, "mm": 5 },
+    { "name": "#8"        , "inch": 0.199 , "mm": 5.0546 },
+    { "name": "5.1 mm"    , "inch": 0.2008, "mm": 5.1 },
+    { "name": "#7"        , "inch": 0.201 , "mm": 5.1054 },
+    { "name": "13/64 in"  , "inch": 0.2031, "mm": 5.1594 },
+    { "name": "#6"        , "inch": 0.204 , "mm": 5.1816 },
+    { "name": "5.2 mm"    , "inch": 0.2047, "mm": 5.2 },
+    { "name": "#5"        , "inch": 0.2055, "mm": 5.2197 },
+    { "name": "5.3 mm"    , "inch": 0.2087, "mm": 5.3 },
+    { "name": "#4"        , "inch": 0.209 , "mm": 5.3086 },
+    { "name": "5.4 mm"    , "inch": 0.2126, "mm": 5.4 },
+    { "name": "#3"        , "inch": 0.213 , "mm": 5.4102 },
+    { "name": "5.5 mm"    , "inch": 0.2165, "mm": 5.5 },
+    { "name": "7/32 in"   , "inch": 0.2188, "mm": 5.5563 },
+    { "name": "5.6 mm"    , "inch": 0.2205, "mm": 5.6 },
+    { "name": "#2"        , "inch": 0.221 , "mm": 5.6134 },
+    { "name": "5.7 mm"    , "inch": 0.2244, "mm": 5.7 },
+    { "name": "#1"        , "inch": 0.228 , "mm": 5.7912 },
+    { "name": "5.8 mm"    , "inch": 0.2284, "mm": 5.8 },
+    { "name": "5.9 mm"    , "inch": 0.2323, "mm": 5.9 },
+    { "name": "A"         , "inch": 0.234 , "mm": 5.9436 },
+    { "name": "15/64 in"  , "inch": 0.2344, "mm": 5.9531 },
+    { "name": "6 mm"      , "inch": 0.2362, "mm": 6 },
+    { "name": "B"         , "inch": 0.238 , "mm": 6.0452 },
+    { "name": "6.1 mm"    , "inch": 0.2402, "mm": 6.1 },
+    { "name": "C"         , "inch": 0.242 , "mm": 6.1468 },
+    { "name": "6.2 mm"    , "inch": 0.2441, "mm": 6.2 },
+    { "name": "D"         , "inch": 0.246 , "mm": 6.2484 },
+    { "name": "6.3 mm"    , "inch": 0.248 , "mm": 6.3 },
+    { "name": "1/4 in"    , "inch": 0.25  , "mm": 6.35 },
+    { "name": "E"         , "inch": 0.25  , "mm": 6.35 },
+    { "name": "6.4 mm"    , "inch": 0.252 , "mm": 6.4 },
+    { "name": "6.5 mm"    , "inch": 0.2559, "mm": 6.5 },
+    { "name": "F"         , "inch": 0.257 , "mm": 6.5278 },
+    { "name": "6.6 mm"    , "inch": 0.2598, "mm": 6.6 },
+    { "name": "G"         , "inch": 0.261 , "mm": 6.6294 },
+    { "name": "6.7 mm"    , "inch": 0.2638, "mm": 6.7 },
+    { "name": "17/64 in"  , "inch": 0.2656, "mm": 6.7469 },
+    { "name": "H"         , "inch": 0.266 , "mm": 6.7564 },
+    { "name": "6.8 mm"    , "inch": 0.2677, "mm": 6.8 },
+    { "name": "6.9 mm"    , "inch": 0.2717, "mm": 6.9 },
+    { "name": "I"         , "inch": 0.272 , "mm": 6.9088 },
+    { "name": "7 mm"      , "inch": 0.2756, "mm": 7 },
+    { "name": "J"         , "inch": 0.277 , "mm": 7.0358 },
+    { "name": "7.1 mm"    , "inch": 0.2795, "mm": 7.1 },
+    { "name": "K"         , "inch": 0.281 , "mm": 7.1374 },
+    { "name": "9/32 in"   , "inch": 0.2813, "mm": 7.1438 },
+    { "name": "7.2 mm"    , "inch": 0.2835, "mm": 7.2 },
+    { "name": "7.3 mm"    , "inch": 0.2874, "mm": 7.3 },
+    { "name": "L"         , "inch": 0.29  , "mm": 7.366 },
+    { "name": "7.4 mm"    , "inch": 0.2913, "mm": 7.4 },
+    { "name": "M"         , "inch": 0.295 , "mm": 7.493 },
+    { "name": "7.5 mm"    , "inch": 0.2953, "mm": 7.5 },
+    { "name": "19/64 in"  , "inch": 0.2969, "mm": 7.5406 },
+    { "name": "7.6 mm"    , "inch": 0.2992, "mm": 7.6 },
+    { "name": "N"         , "inch": 0.302 , "mm": 7.6708 },
+    { "name": "7.7 mm"    , "inch": 0.3032, "mm": 7.7 },
+    { "name": "7.8 mm"    , "inch": 0.3071, "mm": 7.8 },
+    { "name": "7.9 mm"    , "inch": 0.311 , "mm": 7.9 },
+    { "name": "5/16 in"   , "inch": 0.3125, "mm": 7.9375 },
+    { "name": "8 mm"      , "inch": 0.315 , "mm": 8 },
+    { "name": "O"         , "inch": 0.316 , "mm": 8.0264 },
+    { "name": "8.1 mm"    , "inch": 0.3189, "mm": 8.1 },
+    { "name": "8.2 mm"    , "inch": 0.3228, "mm": 8.2 },
+    { "name": "P"         , "inch": 0.323 , "mm": 8.2042 },
+    { "name": "8.3 mm"    , "inch": 0.3268, "mm": 8.3 },
+    { "name": "21/64 in"  , "inch": 0.3281, "mm": 8.3344 },
+    { "name": "8.4 mm"    , "inch": 0.3307, "mm": 8.4 },
+    { "name": "Q"         , "inch": 0.332 , "mm": 8.4328 },
+    { "name": "8.5 mm"    , "inch": 0.3347, "mm": 8.5 },
+    { "name": "8.6 mm"    , "inch": 0.3386, "mm": 8.6 },
+    { "name": "R"         , "inch": 0.339 , "mm": 8.6106 },
+    { "name": "8.7 mm"    , "inch": 0.3425, "mm": 8.7 },
+    { "name": "11/32 in"  , "inch": 0.3438, "mm": 8.7313 },
+    { "name": "8.8 mm"    , "inch": 0.3465, "mm": 8.8 },
+    { "name": "S"         , "inch": 0.348 , "mm": 8.8392 },
+    { "name": "8.9 mm"    , "inch": 0.3504, "mm": 8.9 },
+    { "name": "9.0 mm"    , "inch": 0.3543, "mm": 9 },
+    { "name": "T"         , "inch": 0.358 , "mm": 9.0932 },
+    { "name": "9.1 mm"    , "inch": 0.3583, "mm": 9.1 },
+    { "name": "23/64 in"  , "inch": 0.3594, "mm": 9.1281 },
+    { "name": "9.2 mm"    , "inch": 0.3622, "mm": 9.2 },
+    { "name": "9.3 mm"    , "inch": 0.3661, "mm": 9.3 },
+    { "name": "U"         , "inch": 0.368 , "mm": 9.3472 },
+    { "name": "9.4 mm"    , "inch": 0.3701, "mm": 9.4 },
+    { "name": "9.5 mm"    , "inch": 0.374 , "mm": 9.5 },
+    { "name": "3/8 in"    , "inch": 0.375 , "mm": 9.525 },
+    { "name": "V"         , "inch": 0.377 , "mm": 9.5758 },
+    { "name": "9.6 mm"    , "inch": 0.378 , "mm": 9.6 },
+    { "name": "9.7 mm"    , "inch": 0.3819, "mm": 9.7 },
+    { "name": "9.8 mm"    , "inch": 0.3858, "mm": 9.8 },
+    { "name": "W"         , "inch": 0.386 , "mm": 9.8044 },
+    { "name": "9.9 mm"    , "inch": 0.3898, "mm": 9.9 },
+    { "name": "25/64 in"  , "inch": 0.3906, "mm": 9.9219 },
+    { "name": "10 mm"     , "inch": 0.3937, "mm": 10 },
+    { "name": "X"         , "inch": 0.397 , "mm": 10.0838 },
+    { "name": "Y"         , "inch": 0.404 , "mm": 10.2616 },
+    { "name": "13/32 in"  , "inch": 0.4063, "mm": 10.3188 },
+    { "name": "Z"         , "inch": 0.413 , "mm": 10.4902 },
+    { "name": "10.5 mm"   , "inch": 0.4134, "mm": 10.5 },
+    { "name": "27/64 in"  , "inch": 0.4219, "mm": 10.7156 },
+    { "name": "11 mm"     , "inch": 0.4331, "mm": 11 },
+    { "name": "7/16 in"   , "inch": 0.4375, "mm": 11.1125 },
+    { "name": "11.5 mm"   , "inch": 0.4528, "mm": 11.5 },
+    { "name": "29/64 in"  , "inch": 0.4531, "mm": 11.5094 },
+    { "name": "15/32 in"  , "inch": 0.4688, "mm": 11.9063 },
+    { "name": "12 mm"     , "inch": 0.4724, "mm": 12 },
+    { "name": "31/64 in"  , "inch": 0.4844, "mm": 12.3031 },
+    { "name": "12.5 mm"   , "inch": 0.4921, "mm": 12.5 },
+    { "name": "1/2 in"    , "inch": 0.5   , "mm": 12.7 },
+    { "name": "13 mm"     , "inch": 0.5118, "mm": 13 },
+    { "name": "33/64 in"  , "inch": 0.5156, "mm": 13.0969 },
+    { "name": "17/32 in"  , "inch": 0.5313, "mm": 13.4938 },
+    { "name": "13.5 mm"   , "inch": 0.5315, "mm": 13.5 },
+    { "name": "35/64 in"  , "inch": 0.5469, "mm": 13.8906 },
+    { "name": "14 mm"     , "inch": 0.5512, "mm": 14 },
+    { "name": "9/16 in"   , "inch": 0.5625, "mm": 14.2875 },
+    { "name": "14.5 mm"   , "inch": 0.5709, "mm": 14.5 },
+    { "name": "37/64 in"  , "inch": 0.5781, "mm": 14.6844 },
+    { "name": "15 mm"     , "inch": 0.5906, "mm": 15 },
+    { "name": "19/32 in"  , "inch": 0.5938, "mm": 15.0813 },
+    { "name": "39/64 in"  , "inch": 0.6094, "mm": 15.4781 },
+    { "name": "15.5 mm"   , "inch": 0.6102, "mm": 15.5 },
+    { "name": "5/8 in"    , "inch": 0.625 , "mm": 15.875 },
+    { "name": "16 mm"     , "inch": 0.6299, "mm": 16 },
+    { "name": "41/64 in"  , "inch": 0.6406, "mm": 16.2719 },
+    { "name": "16.5 mm"   , "inch": 0.6496, "mm": 16.5 },
+    { "name": "17 mm"     , "inch": 0.6693, "mm": 17 },
+    { "name": "43/64 in"  , "inch": 0.6719, "mm": 7.0656 },
+    { "name": "11/16 in"  , "inch": 0.6875, "mm": 17.4625 },
+    { "name": "17.5 mm"   , "inch": 0.689 , "mm": 17.5 },
+    { "name": "45/64 in"  , "inch": 0.7031, "mm": 17.8594 },
+    { "name": "18 mm"     , "inch": 0.7087, "mm": 18 },
+    { "name": "23/32 in"  , "inch": 0.7188, "mm": 18.2563 },
+    { "name": "18.5 mm"   , "inch": 0.7284, "mm": 18.5 },
+    { "name": "47/64 in"  , "inch": 0.7344, "mm": 18.6531 },
+    { "name": "19 mm"     , "inch": 0.748 , "mm": 19 },
+    { "name": "3/4 in"    , "inch": 0.75  , "mm": 19.05 },
+    { "name": "49/64 in"  , "inch": 0.7656, "mm": 19.4469 },
+    { "name": "19.5 mm"   , "inch": 0.7677, "mm": 19.5 },
+    { "name": "25/32 in"  , "inch": 0.7813, "mm": 19.8438 },
+    { "name": "20 mm"     , "inch": 0.7874, "mm": 20 },
+    { "name": "51/64 in"  , "inch": 0.7969, "mm": 20.2406 },
+    { "name": "20.5 mm"   , "inch": 0.8071, "mm": 20.5 },
+    { "name": "13/16 in"  , "inch": 0.8125, "mm": 20.6375 },
+    { "name": "21 mm"     , "inch": 8268  , "mm": 21 },
+    { "name": "53/64 in"  , "inch": 0.8281, "mm": 21.0344 },
+    { "name": "27/32 in"  , "inch": 0.8438, "mm": 21.4313 },
+    { "name": "21.5 mm"   , "inch": 0.8465, "mm": 21.5 },
+    { "name": "55/64 in"  , "inch": 0.8594, "mm": 21.8281 },
+    { "name": "22 mm"     , "inch": 0.8661, "mm": 22 },
+    { "name": "7/8 in"    , "inch": 0.875 , "mm": 22.225 },
+    { "name": "22.5 mm"   , "inch": 0.8858, "mm": 22.5 },
+    { "name": "57/64 in"  , "inch": 0.8906, "mm": 22.6219 },
+    { "name": "23 mm"     , "inch": 0.9055, "mm": 23 },
+    { "name": "29/32 in"  , "inch": 0.9063, "mm": 23.0188 },
+    { "name": "21/23 in"  , "inch": 0.913 , "mm": 23.1913 },
+    { "name": "59/64 in"  , "inch": 0.9219, "mm": 23.4156 },
+    { "name": "23.5 mm"   , "inch": 0.9252, "mm": 23.5 },
+    { "name": "15/16 in"  , "inch": 0.9375, "mm": 23.8125 },
+    { "name": "24 mm"     , "inch": 0.9449, "mm": 24 },
+    { "name": "61/64 in"  , "inch": 0.9531, "mm": 24.2094 },
+    { "name": "24.5 mm"   , "inch": 0.9646, "mm": 24.5 },
+    { "name": "31/32 in"  , "inch": 0.9688, "mm": 24.6063 },
+    { "name": "25 mm"     , "inch": 0.9843, "mm": 25 },
+    { "name": "63/64 in"  , "inch": 0.9844, "mm": 25.0031 },
+    { "name": "1 in"      , "inch": 1     , "mm": 25.4 },
+    { "name": "25.5 mm"   , "inch": 1.0039, "mm": 25.5 },
+    { "name": "1-1/64 in" , "inch": 1.0156, "mm": 25.7969 },
+    { "name": "26 mm"     , "inch": 1.0236, "mm": 26 },
+    { "name": "1-1/32 in" , "inch": 1.0313, "mm": 26.1938 },
+    { "name": "26.5 mm"   , "inch": 1.0433, "mm": 26.5 },
+    { "name": "1-3/64 in" , "inch": 1.0469, "mm": 26.5906 },
+    { "name": "1-1/16 in" , "inch": 1.0625, "mm": 26.9875 },
+    { "name": "27 mm"     , "inch": 1.063 , "mm": 27 },
+    { "name": "1-5/64 in" , "inch": 1.0781, "mm": 27.3844 },
+    { "name": "27.5 mm"   , "inch": 1.0827, "mm": 27.5 },
+    { "name": "1-3/32 in" , "inch": 1.0938, "mm": 27.7813 },
+    { "name": "28 mm"     , "inch": 1.1024, "mm": 28 },
+    { "name": "1-7/64 in" , "inch": 1.1094, "mm": 28.1781 },
+    { "name": "28.5 mm"   , "inch": 1.1221, "mm": 28.5 },
+    { "name": "1-1/8 in"  , "inch": 1.125 , "mm": 28.575 },
+    { "name": "1-9/64 in" , "inch": 1.1406, "mm": 28.9719 },
+    { "name": "29 mm"     , "inch": 1.1417, "mm": 29 },
+    { "name": "1-5/32 in" , "inch": 1.1563, "mm": 29.3688 },
+    { "name": "29.5 mm"   , "inch": 1.1614, "mm": 29.5 },
+    { "name": "1-11/64 in", "inch": 1.1719, "mm": 29.7656 },
+    { "name": "30 mm"     , "inch": 1.1811, "mm": 30 },
+    { "name": "1-3/16 in" , "inch": 1.1875, "mm": 30.1625 },
+    { "name": "30.5 mm"   , "inch": 1.2008, "mm": 30.5 },
+    { "name": "1-13/64 in", "inch": 1.2031, "mm": 30.5594 },
+    { "name": "1-7/32 in" , "inch": 1.2188, "mm": 30.9563 },
+    { "name": "31 mm"     , "inch": 1.2205, "mm": 31 },
+    { "name": "1-15/64 in", "inch": 1.2344, "mm": 31.3531 },
+    { "name": "31.5 mm"   , "inch": 1.2402, "mm": 31.5 },
+    { "name": "1-1/4 in"  , "inch": 1.25  , "mm": 31.75 },
+    { "name": "32 mm"     , "inch": 1.2598, "mm": 32 },
+    { "name": "1-17/64 in", "inch": 1.2656, "mm": 32.1469 },
+    { "name": "32.5 mm"   , "inch": 1.2795, "mm": 32.5 },
+    { "name": "1-9/32 in" , "inch": 1.2813, "mm": 32.5438 },
+    { "name": "1-19/64 in", "inch": 1.2969, "mm": 32.9406 },
+    { "name": "33 mm"     , "inch": 1.2992, "mm": 33 },
+    { "name": "1-5/16 in" , "inch": 1.3125, "mm": 33.3375 },
+    { "name": "33.5 mm"   , "inch": 1.3189, "mm": 33.5 },
+    { "name": "1-21/64 in", "inch": 1.3281, "mm": 33.7344 },
+    { "name": "34 mm"     , "inch": 1.3386, "mm": 34 },
+    { "name": "1-11/32 in", "inch": 1.3438, "mm": 34.1313 },
+    { "name": "34.5 mm"   , "inch": 1.3583, "mm": 34.5 },
+    { "name": "1-23/64 in", "inch": 1.3594, "mm": 34.5281 },
+    { "name": "1-3/8 in"  , "inch": 1.375 , "mm": 34.925 },
+    { "name": "35 mm"     , "inch": 1.378 , "mm": 35 },
+    { "name": "1-25/64 in", "inch": 1.3906, "mm": 35.3219 },
+    { "name": "1-3/8 in"  , "inch": 1.375 , "mm": 34.925 },
+    { "name": "35 mm"     , "inch": 1.378 , "mm": 35 },
+    { "name": "1-25/64 in", "inch": 1.3906, "mm": 35.3219 },
+    { "name": "35.5 mm"   , "inch": 1.3976, "mm": 35.5 },
+    { "name": "1-13/32 in", "inch": 1.4063, "mm": 35.7188 },
+    { "name": "36 mm"     , "inch": 1.4173, "mm": 36 },
+    { "name": "1-27/64 in", "inch": 1.4219, "mm": 36.1156 },
+    { "name": "36.5 mm"   , "inch": 1.437 , "mm": 36.5 },
+    { "name": "1-7/16 in" , "inch": 1.4375, "mm": 36.5125 },
+    { "name": "1-29/64 in", "inch": 1.4531, "mm": 36.9094 },
+    { "name": "37 mm"     , "inch": 1.4567, "mm": 37 }
+  ],
+  "endmill": [
+    {"name": "1/64",   "inch": 0.015625, "mm": 0.396875},
+    {"name": "0.4 mm", "inch": 0.015748, "mm": 0.4},
+    {"name": "0.5 mm", "inch": 0.019685, "mm": 0.5},
+    {"name": "0.6 mm", "inch": 0.023622, "mm": 0.6},
+    {"name": "1/32",   "inch": 0.03125,  "mm": 0.79375},
+    {"name": "0.8 mm", "inch": 0.031496, "mm": 0.8},
+    {"name": "1 mm",   "inch": 0.039370, "mm": 1.0},
+    {"name": "3/64",   "inch": 0.046875, "mm": 1.190625},
+    {"name": "1.2 mm", "inch": 0.047244, "mm": 1.2},
+    {"name": "1/16",   "inch": 0.0625,   "mm": 1.5875},
+    {"name": "1.5 mm", "inch": 0.059055, "mm": 1.5},
+    {"name": "5/64",   "inch": 0.078125, "mm": 1.984375},
+    {"name": "2 mm",   "inch": 0.078740, "mm": 2.0},
+    {"name": "3/32",   "inch": 0.09375,  "mm": 2.38125},
+    {"name": "2.5 mm", "inch": 0.098425, "mm": 2.5},
+    {"name": "7/64",   "inch": 0.109375, "mm": 2.778125},
+    {"name": "3 mm",   "inch": 0.118110, "mm": 3.0},
+    {"name": "1/8",    "inch": 0.125,    "mm": 3.175},
+    {"name": "3.5 mm", "inch": 0.137795, "mm": 3.5},
+    {"name": "9/64",   "inch": 0.140625, "mm": 3.571875},
+    {"name": "4 mm",   "inch": 0.157480, "mm": 4.0},
+    {"name": "5/32",   "inch": 0.15625,  "mm": 3.96875},
+    {"name": "4.5 mm", "inch": 0.177165, "mm": 4.5},
+    {"name": "11/64",  "inch": 0.171875, "mm": 4.365625},
+    {"name": "3/16",   "inch": 0.1875,   "mm": 4.7625},
+    {"name": "5 mm",   "inch": 0.196850, "mm": 5.0},
+    {"name": "13/64",  "inch": 0.203125, "mm": 5.159375},
+    {"name": "7/32",   "inch": 0.21875,  "mm": 5.55625},
+    {"name": "15/64",  "inch": 0.234375, "mm": 5.953125},
+    {"name": "6 mm",   "inch": 0.236220, "mm": 6.0},
+    {"name": "1/4",    "inch": 0.25,     "mm": 6.35},
+    {"name": "7 mm",   "inch": 0.275591, "mm": 7.0},
+    {"name": "9/32",   "inch": 0.28125,  "mm": 7.14375},
+    {"name": "5/16",   "inch": 0.3125,   "mm": 7.9375},
+    {"name": "8 mm",   "inch": 0.314961, "mm": 8.0},
+    {"name": "11/32",  "inch": 0.34375,  "mm": 8.73125},
+    {"name": "9 mm",   "inch": 0.354331, "mm": 9.0},
+    {"name": "3/8",    "inch": 0.375,    "mm": 9.525},
+    {"name": "10 mm",  "inch": 0.393701, "mm": 10.0},
+    {"name": "7/16",   "inch": 0.4375,   "mm": 11.1125},
+    {"name": "11 mm",  "inch": 0.433071, "mm": 11.0},
+    {"name": "12 mm",  "inch": 0.472441, "mm": 12.0},
+    {"name": "1/2",    "inch": 0.5,      "mm": 12.7},
+    {"name": "14 mm",  "inch": 0.551181, "mm": 14.0},
+    {"name": "9/16",   "inch": 0.5625,   "mm": 14.2875},
+    {"name": "5/8",    "inch": 0.625,    "mm": 15.875},
+    {"name": "16 mm",  "inch": 0.629921, "mm": 16.0},
+    {"name": "11/16",  "inch": 0.6875,   "mm": 17.4625},
+    {"name": "18 mm",  "inch": 0.708661, "mm": 18.0},
+    {"name": "3/4",    "inch": 0.75,     "mm": 19.05},
+    {"name": "20 mm",  "inch": 0.787402, "mm": 20.0},
+    {"name": "7/8",    "inch": 0.875,    "mm": 22.225},
+    {"name": "25 mm",  "inch": 0.984252, "mm": 25.0},
+    // {"name": "1",      "inch": 1.0,      "mm": 25.4},
+    {"name": "1-1/8",  "inch": 1.125,    "mm": 28.575},
+    {"name": "1-1/4",  "inch": 1.25,     "mm": 31.75},
+    {"name": "32 mm",  "inch": 1.259843, "mm": 32.0},
+    {"name": "1-1/2",  "inch": 1.5,      "mm": 38.1},
+    {"name": "40 mm",  "inch": 1.574803, "mm": 40.0},
+    // {"name": "2",      "inch": 2.0,      "mm": 50.8},
+    {"name": "50 mm",  "inch": 1.968504, "mm": 50.0}
+  ],
+  "tap": [
+    { "name": "#0-80"    , "inch": 0.06    , "mm": 1.524  , "tpi": 80    , "pitch": 0.3175 },
+    { "name": "#1-64"    , "inch": 0.073   , "mm": 1.8542 , "tpi": 64    , "pitch": 0.396875 },
+    { "name": "#1-72"    , "inch": 0.073   , "mm": 1.8542 , "tpi": 72    , "pitch": 0.352778 },
+    { "name": "M1.6x0.35", "inch": 0.062992, "mm": 1.6    , "tpi": 72.571, "pitch": 0.35 },
+    { "name": "M1.8x0.35", "inch": 0.070866, "mm": 1.8    , "tpi": 72.571, "pitch": 0.35 },
+    { "name": "M2x0.4"   , "inch": 0.07874 , "mm": 2.0    , "tpi": 63.5  , "pitch": 0.4 },
+    { "name": "#2-56"    , "inch": 0.086   , "mm": 2.1844 , "tpi": 56    , "pitch": 0.453571 },
+    { "name": "#2-64"    , "inch": 0.086   , "mm": 2.1844 , "tpi": 64    , "pitch": 0.396875 },
+    { "name": "M2.5x0.45", "inch": 0.098425, "mm": 2.5    , "tpi": 56.444, "pitch": 0.45 },
+    { "name": "#3-48"    , "inch": 0.099   , "mm": 2.5146 , "tpi": 48    , "pitch": 0.529167 },
+    { "name": "#3-56"    , "inch": 0.099   , "mm": 2.5146 , "tpi": 56    , "pitch": 0.453571 },
+    { "name": "M3x0.5"   , "inch": 0.11811 , "mm": 3.0    , "tpi": 50.8  , "pitch": 0.5 },
+    { "name": "#4-40"    , "inch": 0.112   , "mm": 2.8448 , "tpi": 40    , "pitch": 0.635 },
+    { "name": "#4-48"    , "inch": 0.112   , "mm": 2.8448 , "tpi": 48    , "pitch": 0.529167 },
+    { "name": "M3.5x0.6" , "inch": 0.137795, "mm": 3.5    , "tpi": 42.333, "pitch": 0.6 },
+    { "name": "#5-40"    , "inch": 0.125   , "mm": 3.175  , "tpi": 40    , "pitch": 0.635 },
+    { "name": "#5-44"    , "inch": 0.125   , "mm": 3.175  , "tpi": 44    , "pitch": 0.577273 },
+    { "name": "M4x0.7"   , "inch": 0.15748 , "mm": 4.0    , "tpi": 36.286, "pitch": 0.7 },
+    { "name": "#6-32"    , "inch": 0.138   , "mm": 3.5052 , "tpi": 32    , "pitch": 0.79375 },
+    { "name": "#6-40"    , "inch": 0.138   , "mm": 3.5052 , "tpi": 40    , "pitch": 0.635 },
+    { "name": "M5x0.8"   , "inch": 0.19685 , "mm": 5.0    , "tpi": 31.75 , "pitch": 0.8 },
+    { "name": "#8-32"    , "inch": 0.164   , "mm": 4.1656 , "tpi": 32    , "pitch": 0.79375 },
+    { "name": "#8-36"    , "inch": 0.164   , "mm": 4.1656 , "tpi": 36    , "pitch": 0.705556 },
+    { "name": "M6x1.0"   , "inch": 0.23622 , "mm": 6.0    , "tpi": 25.4  , "pitch": 1.0 },
+    { "name": "#10-24"   , "inch": 0.19    , "mm": 4.826  , "tpi": 24    , "pitch": 1.058333 },
+    { "name": "#10-32"   , "inch": 0.19    , "mm": 4.826  , "tpi": 32    , "pitch": 0.79375 },
+    { "name": "M7x1.0"   , "inch": 0.275591, "mm": 7.0    , "tpi": 25.4  , "pitch": 1.0 },
+    { "name": "#12-24"   , "inch": 0.216   , "mm": 5.4864 , "tpi": 24    , "pitch": 1.058333 },
+    { "name": "#12-28"   , "inch": 0.216   , "mm": 5.4864 , "tpi": 28    , "pitch": 0.907143 },
+    { "name": "M8x1.0"   , "inch": 0.314961, "mm": 8.0    , "tpi": 25.4  , "pitch": 1.0 },
+    { "name": "M8x1.25"  , "inch": 0.314961, "mm": 8.0    , "tpi": 20.32 , "pitch": 1.25 },
+    { "name": "1/4-20"   , "inch": 0.25    , "mm": 6.35   , "tpi": 20    , "pitch": 1.27 },
+    { "name": "1/4-28"   , "inch": 0.25    , "mm": 6.35   , "tpi": 28    , "pitch": 0.907143 },
+    { "name": "M10x1.25" , "inch": 0.393701, "mm": 10.0   , "tpi": 20.32 , "pitch": 1.25 },
+    { "name": "M10x1.5"  , "inch": 0.393701, "mm": 10.0   , "tpi": 16.933, "pitch": 1.5 },
+    { "name": "5/16-18"  , "inch": 0.3125  , "mm": 7.9375 , "tpi": 18    , "pitch": 1.411111 },
+    { "name": "5/16-24"  , "inch": 0.3125  , "mm": 7.9375 , "tpi": 24    , "pitch": 1.058333 },
+    { "name": "M12x1.25" , "inch": 0.472441, "mm": 12.0   , "tpi": 20.32 , "pitch": 1.25 },
+    { "name": "M12x1.5"  , "inch": 0.472441, "mm": 12.0   , "tpi": 16.933, "pitch": 1.5 },
+    { "name": "M12x1.75" , "inch": 0.472441, "mm": 12.0   , "tpi": 14.514, "pitch": 1.75 },
+    { "name": "3/8-16"   , "inch": 0.375   , "mm": 9.525  , "tpi": 16    , "pitch": 1.5875 },
+    { "name": "3/8-24"   , "inch": 0.375   , "mm": 9.525  , "tpi": 24    , "pitch": 1.058333 },
+    { "name": "M14x1.5"  , "inch": 0.551181, "mm": 14.0   , "tpi": 16.933, "pitch": 1.5 },
+    { "name": "M14x2.0"  , "inch": 0.551181, "mm": 14.0   , "tpi": 12.7  , "pitch": 2.0 },
+    { "name": "7/16-14"  , "inch": 0.4375  , "mm": 11.1125, "tpi": 14    , "pitch": 1.814286 },
+    { "name": "7/16-20"  , "inch": 0.4375  , "mm": 11.1125, "tpi": 20    , "pitch": 1.27 },
+    { "name": "M16x1.5"  , "inch": 0.629921, "mm": 16.0   , "tpi": 16.933, "pitch": 1.5 },
+    { "name": "M16x2.0"  , "inch": 0.629921, "mm": 16.0   , "tpi": 12.7  , "pitch": 2.0 },
+    { "name": "1/2-13"   , "inch": 0.5     , "mm": 12.7   , "tpi": 13    , "pitch": 1.953846 },
+    { "name": "1/2-20"   , "inch": 0.5     , "mm": 12.7   , "tpi": 20    , "pitch": 1.27 },
+    { "name": "M18x1.5"  , "inch": 0.708661, "mm": 18.0   , "tpi": 16.933, "pitch": 1.5 },
+    { "name": "M18x2.5"  , "inch": 0.708661, "mm": 18.0   , "tpi": 10.16 , "pitch": 2.5 },
+    { "name": "9/16-12"  , "inch": 0.5625  , "mm": 14.2875, "tpi": 12    , "pitch": 2.116667 },
+    { "name": "9/16-18"  , "inch": 0.5625  , "mm": 14.2875, "tpi": 18    , "pitch": 1.411111 },
+    { "name": "M20x1.5"  , "inch": 0.787402, "mm": 20.0   , "tpi": 16.933, "pitch": 1.5 },
+    { "name": "M20x2.5"  , "inch": 0.787402, "mm": 20.0   , "tpi": 10.16 , "pitch": 2.5 },
+    { "name": "5/8-11"   , "inch": 0.625   , "mm": 15.875 , "tpi": 11    , "pitch": 2.309091 },
+    { "name": "5/8-18"   , "inch": 0.625   , "mm": 15.875 , "tpi": 18    , "pitch": 1.411111 },
+    { "name": "M22x1.5"  , "inch": 0.866142, "mm": 22.0   , "tpi": 16.933, "pitch": 1.5 },
+    { "name": "M22x2.5"  , "inch": 0.866142, "mm": 22.0   , "tpi": 10.16 , "pitch": 2.5 },
+    { "name": "3/4-10"   , "inch": 0.75    , "mm": 19.05  , "tpi": 10    , "pitch": 2.54 },
+    { "name": "3/4-16"   , "inch": 0.75    , "mm": 19.05  , "tpi": 16    , "pitch": 1.5875 },
+    { "name": "M24x2.0"  , "inch": 0.944882, "mm": 24.0   , "tpi": 12.7  , "pitch": 2.0 },
+    { "name": "M24x3.0"  , "inch": 0.944882, "mm": 24.0   , "tpi": 8.467 , "pitch": 3.0 },
+    { "name": "7/8-9"    , "inch": 0.875   , "mm": 22.225 , "tpi": 9     , "pitch": 2.822222 },
+    { "name": "7/8-14"   , "inch": 0.875   , "mm": 22.225 , "tpi": 14    , "pitch": 1.814286 },
+    { "name": "M27x2.0"  , "inch": 1.062992, "mm": 27.0   , "tpi": 12.7  , "pitch": 2.0 },
+    { "name": "M27x3.0"  , "inch": 1.062992, "mm": 27.0   , "tpi": 8.467 , "pitch": 3.0 },
+    { "name": "1-8"      , "inch": 1.0     , "mm": 25.4   , "tpi": 8     , "pitch": 3.175 },
+    { "name": "1-12"     , "inch": 1.0     , "mm": 25.4   , "tpi": 12    , "pitch": 2.116667 },
+    { "name": "1-14"     , "inch": 1.0     , "mm": 25.4   , "tpi": 14    , "pitch": 1.814286 },
+    { "name": "M30x2.0"  , "inch": 1.181102, "mm": 30.0   , "tpi": 12.7  , "pitch": 2.0 },
+    { "name": "M30x3.5"  , "inch": 1.181102, "mm": 30.0   , "tpi": 7.257 , "pitch": 3.5 },
+    { "name": "1-1/8-7"  , "inch": 1.125   , "mm": 28.575 , "tpi": 7     , "pitch": 3.628571 },
+    { "name": "1-1/8-12" , "inch": 1.125   , "mm": 28.575 , "tpi": 12    , "pitch": 2.116667 },
+    { "name": "M33x2.0"  , "inch": 1.299213, "mm": 33.0   , "tpi": 12.7  , "pitch": 2.0 },
+    { "name": "M33x3.5"  , "inch": 1.299213, "mm": 33.0   , "tpi": 7.257 , "pitch": 3.5 },
+    { "name": "1-1/4-7"  , "inch": 1.25    , "mm": 31.75  , "tpi": 7     , "pitch": 3.628571 },
+    { "name": "1-1/4-12" , "inch": 1.25    , "mm": 31.75  , "tpi": 12    , "pitch": 2.116667 },
+    { "name": "M36x3.0"  , "inch": 1.417323, "mm": 36.0   , "tpi": 8.467 , "pitch": 3.0 },
+    { "name": "M36x4.0"  , "inch": 1.417323, "mm": 36.0   , "tpi": 6.35  , "pitch": 4.0 },
+    { "name": "1-3/8-6"  , "inch": 1.375   , "mm": 34.925 , "tpi": 6     , "pitch": 4.233333 },
+    { "name": "1-3/8-12" , "inch": 1.375   , "mm": 34.925 , "tpi": 12    , "pitch": 2.116667 },
+    { "name": "M39x3.0"  , "inch": 1.535433, "mm": 39.0   , "tpi": 8.467 , "pitch": 3.0 },
+    { "name": "M39x4.0"  , "inch": 1.535433, "mm": 39.0   , "tpi": 6.35  , "pitch": 4.0 },
+    { "name": "1-1/2-6"  , "inch": 1.5     , "mm": 38.1   , "tpi": 6     , "pitch": 4.233333 },
+    { "name": "1-1/2-12" , "inch": 1.5     , "mm": 38.1   , "tpi": 12    , "pitch": 2.116667 },
+    { "name": "M42x3.0"  , "inch": 1.653543, "mm": 42.0   , "tpi": 8.467 , "pitch": 3.0 },
+    { "name": "M42x4.5"  , "inch": 1.653543, "mm": 42.0   , "tpi": 5.644 , "pitch": 4.5 },
+    { "name": "M45x3.0"  , "inch": 1.771654, "mm": 45.0   , "tpi": 8.467 , "pitch": 3.0 },
+    { "name": "M45x4.5"  , "inch": 1.771654, "mm": 45.0   , "tpi": 5.644 , "pitch": 4.5 },
+    { "name": "M48x3.0"  , "inch": 1.889764, "mm": 48.0   , "tpi": 8.467 , "pitch": 3.0 },
+    { "name": "M48x5.0"  , "inch": 1.889764, "mm": 48.0   , "tpi": 5.08  , "pitch": 5.0 }
+  ]
 }
 
 /**
@@ -1288,18 +2025,27 @@ function writeFixtureOffset(abc, reset) {
     if (!state.twpIsActive && abc.isZero()) {
       return;
     }
+    if (oo88Abc.isZero()) {
+      state.twpIsActive = false
+      gMotionModal.reset()
+      return
+    }
+    var pX = reset ? 0 : currentSection.workOrigin.x
+    var pY = reset ? 0 : currentSection.workOrigin.y
+    var pZ = reset ? 0 : currentSection.workOrigin.z
     writeBlock(
       "CALL OO88",
-      "PX=" + xyzFormat.format(reset ? 0 : currentSection.workOrigin.x),
-      "PY=" + xyzFormat.format(reset ? 0 : currentSection.workOrigin.y),
-      "PZ=" + xyzFormat.format(reset ? 0 : currentSection.workOrigin.z),
+      conditional((pX != 0), "PX=" + xyzFormat.format(pX)),
+      conditional((pY != 0), "PY=" + xyzFormat.format(pY)),
+      conditional((pZ != 0), "PZ=" + xyzFormat.format(pZ)),
       conditional(machineConfiguration.isMachineCoordinate(2), "PC=" + abcFormat.format(oo88Abc.z)),
       conditional(machineConfiguration.isMachineCoordinate(1), "PB=" + abcFormat.format(oo88Abc.y)),
       conditional(machineConfiguration.isMachineCoordinate(0), "PA=" + abcFormat.format(oo88Abc.x)),
       "PH=" + xyzFormat.format(currentSection.workOffset),
       "PP=" + xyzFormat.format(fixtureOffsetWCS)
     );
-    writeBlock(gFormat.format(15), hFormat.format(abc.isZero() ? currentSection.workOffset : fixtureOffsetWCS));
+    var wcs = abc.isZero() ? currentSection.workOffset : fixtureOffsetWCS
+    writeBlock(gFormat.format(15), hFormat.format(wcs), `(Temp WCS# ${wcs})`);
     break;
   case "G605":
     if (abc.isZero()) {
@@ -1552,8 +2298,9 @@ function writeToolCheckEnd() {
 
 function getProgramName() {
   if (programName) {
-    if (programName.length > 8) {
-      warning(subst(localize("Program name exceeds maximum length of '%1' characters."), 8));
+    if (programName.length > 4) {
+      warning(subst(localize("Program name truncated to '%1' characters."), 4));
+      programName = programName.substring(0, 4);
     }
     programName = String(programName).toUpperCase();
     if (!isSafeText(programName, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")) {
@@ -2908,17 +3655,22 @@ function onClose() {
   if (probeVariables.probeAngleMethod == "G68") {
     cancelWorkPlane();
   }
-  writeln("");
   onCommand(COMMAND_COOLANT_OFF);
   onCommand(COMMAND_STOP_SPINDLE);
 
   if (machineConfiguration.isMultiAxisConfiguration()) {
     cancelWorkPlane();
-    setWorkPlane(new Vector(0, 0, 0)); // reset working plane
   }
   writeRetract(Z);
   if (getSetting("retract.homeXY.onProgramEnd", false)) {
     writeRetract(settings.retract.homeXY.onProgramEnd);
+  }
+  // CUSTOM: blank line before final B-axis home positioning (program-end cleanup).
+  // writeRetract(Z) above has already set state.retractedZ = true, so the internal
+  // writeRetract(Z) inside setWorkPlane is a no-op and only positionABC fires.
+  if (machineConfiguration.isMultiAxisConfiguration()) {
+    writeln("");
+    setWorkPlane(new Vector(0, 0, 0)); // reset working plane
   }
 
   // CUSTOM: optional G30 P<n> return to secondary reference point at program end.
@@ -3939,7 +4691,7 @@ function writeWCS(section, wcsIsRequired) {
       forceWorkPlane();
     }
     writeStartBlocks(wcsIsRequired, function () {
-      writeBlock(section.wcs);
+      writeBlock(section.wcs, `(WCS# ${section.workOffset})`);
     });
     currentWorkOffset = section.workOffset;
   }
@@ -4161,15 +4913,31 @@ var coolantOff = undefined;
 var isOptionalCoolant = false;
 var forceCoolant = false;
 
+function getCoolantLabel(coolant) {
+  switch (coolant) {
+  case COOLANT_OFF:                return "Coolant Off";
+  case COOLANT_FLOOD:              return "Flood Coolant";
+  case COOLANT_MIST:               return "Mist Coolant";
+  case COOLANT_TOOL:               return "Through Spindle Coolant";
+  case COOLANT_AIR:                return "Air Blast";
+  case COOLANT_AIR_THROUGH_TOOL:   return "Air Through Tool";
+  case COOLANT_SUCTION:            return "Suction";
+  case COOLANT_FLOOD_MIST:         return "Flood + Mist";
+  case COOLANT_FLOOD_THROUGH_TOOL: return "Flood + Through Spindle";
+  default:                         return "Coolant";
+  }
+}
+
 function setCoolant(coolant) {
   var coolantCodes = getCoolantCodes(coolant);
   if (Array.isArray(coolantCodes)) {
+    var coolantLabel = formatComment(getCoolantLabel(coolant));
     writeStartBlocks(!isOptionalCoolant, function () {
       if (settings.coolant.singleLineCoolant) {
-        writeBlock(coolantCodes.join(getWordSeparator()));
+        writeBlock(coolantCodes.join(getWordSeparator()), coolantLabel);
       } else {
         for (var c in coolantCodes) {
-          writeBlock(coolantCodes[c]);
+          writeBlock(coolantCodes[c], parseInt(c) === 0 ? coolantLabel : "");
         }
       }
     });
@@ -4414,19 +5182,32 @@ function writeProgramHeader() {
       }
       var tools = getToolTable();
       if (tools.getNumberOfTools() > 0) {
+        // First pass: collect components and compute column widths for alignment.
+        var rows = [];
+        var w = [0, 0, 0, 0]; // tStr, friendly|decimal, [decimal], typeName
         for (var i = 0; i < tools.getNumberOfTools(); ++i) {
           var tool = tools.getTool(i);
-          var comment = (getProperty("toolAsName") ? "\"" + tool.description.toUpperCase() + "\"" : "T" + toolFormat.format(tool.number)) + " " +
-          "D=" + xyzFormat.format(tool.diameter) + " " +
-          localize("CR") + "=" + xyzFormat.format(tool.cornerRadius);
-          if ((tool.taperAngle > 0) && (tool.taperAngle < Math.PI)) {
-            comment += " " + localize("TAPER") + "=" + taperFormat.format(tool.taperAngle) + localize("deg");
-          }
-          if (zRanges[tool.number]) {
-            comment += " - " + localize("ZMIN") + "=" + xyzFormat.format(zRanges[tool.number].getMinimum());
-          }
-          comment += " - " + getToolTypeName(tool.type);
-          writeComment(comment);
+          var c = getToolComponents(tool);
+          var col0 = c.tStr;
+          var col1 = c.friendly || "";
+          var col2 = "[" + c.decimal + "]";
+          var col3 = c.typeName;
+          var col4 = c.extras.join(" ");
+          var col5 = zRanges[tool.number] ? "ZMIN=" + xyzFormat.format(zRanges[tool.number].getMinimum()) : "";
+          rows.push([col0, col1, col2, col3, col4, col5]);
+          w[0] = Math.max(w[0], col0.length);
+          w[1] = Math.max(w[1], col1.length);
+          w[2] = Math.max(w[2], col2.length);
+          w[3] = Math.max(w[3], col3.length);
+        }
+        // Second pass: emit column-aligned comment lines.
+        for (var i = 0; i < rows.length; ++i) {
+          var r = rows[i];
+          var line = padRight(r[0], w[0]) + "  " + padRight(r[1], w[1]) + "  " + padRight(r[2], w[2]);
+          line += "  " + padRight(r[3], w[3]);
+          if (r[4]) { line += "  " + r[4]; }
+          if (r[5]) { line += "  " + r[5]; }
+          writeComment(line.replace(/ +$/, ""));
         }
       }
     }
