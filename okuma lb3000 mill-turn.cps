@@ -948,6 +948,49 @@ function formatTool(tool, cancelCompensation) {
   return toolNumber;
 }
 
+// Returns a single-line tool comment for per-section headers.
+// Turning tools: type, insert shape, orientation, hand, ID/OD, nose radius, IC.
+// Live (milling) tools: diameter, corner radius, type.
+function getTurningToolComment(tool) {
+  var tStr = formatTool(tool, false);
+  var typeName = getToolTypeName(tool.type);
+  var parts = [];
+
+  if (tool.isTurningTool()) {
+    parts.push(typeName.toUpperCase());
+    // INSERT and ORI come from tool library properties; populated when Fusion exposes them.
+    if (tool.insertShape) {
+      parts.push("INSERT=" + tool.insertShape);
+    }
+    if (typeof tool.orientation !== "undefined") {
+      parts.push("ORI=" + tool.orientation);
+    }
+    // Hand of cut and ID/OD are per-operation and always available.
+    if (hasParameter("operation:tool_hand")) {
+      parts.push("HAND=" + getParameter("operation:tool_hand"));
+    }
+    if (hasParameter("operation:machineInside")) {
+      parts.push(getParameter("operation:machineInside") ? "ID" : "OD");
+    }
+    if (tool.noseRadius > 0) {
+      parts.push("NR=" + spatialFormat.format(tool.noseRadius));
+    }
+    if (tool.inscribedCircleDiameter > 0) {
+      parts.push("IC=" + spatialFormat.format(tool.inscribedCircleDiameter));
+    }
+  } else {
+    if (tool.diameter > 0) {
+      parts.push("D=" + spatialFormat.format(tool.diameter));
+    }
+    if (tool.cornerRadius > 0) {
+      parts.push("CR=" + spatialFormat.format(tool.cornerRadius));
+    }
+    parts.push(typeName);
+  }
+
+  return parts.join("  ") + "  - " + tStr;
+}
+
 var skipBlocks = false;
 function writeStartBlocks(isRequired, code) {
   var safeSkipBlocks = skipBlocks;
@@ -1885,6 +1928,14 @@ function onSection() {
         writeComment(comment);
       }
     }
+  }
+  if (insertToolCall && currentSection.getTool()) {
+    var descParts = [];
+    if (tool.description) { descParts.push(tool.description); }
+    if (tool.vendor)      { descParts.push(tool.vendor); }
+    if (tool.productId)   { descParts.push(tool.productId); }
+    if (descParts.length > 0) { writeComment(descParts.join(" - ")); }
+    writeComment(getTurningToolComment(tool));
   }
 
   // Select the active spindle
