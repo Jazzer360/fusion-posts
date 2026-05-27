@@ -4,8 +4,8 @@
 
   Okuma LB3000 Lathe post processor configuration.
 
-  $Revision: 44210 aab7925640b48c5f8f0e2cc46a4d4c4f8555a5e6 $
-  $Date: 2026-01-20 22:37:45 $
+  $Revision: 44226 fcaa521d4c71c947f729a6871e6f3619e8022805 $
+  $Date: 2026-05-19 17:26:35 $
 
   FORKID {D93DAA65-1C09-402E-9871-3280B561D994}
 */
@@ -122,6 +122,7 @@ properties = {
       {title:"Only on tool change", id:"toolChange"}
     ],
     value: "toolChange",
+    order: 1,
     scope: "post"
   },
   sequenceNumberStart: {
@@ -130,6 +131,7 @@ properties = {
     group      : "formats",
     type       : "integer",
     value      : 1,
+    order      : 2,
     scope      : "post"
   },
   sequenceNumberIncrement: {
@@ -138,6 +140,7 @@ properties = {
     group      : "formats",
     type       : "integer",
     value      : 1,
+    order      : 3,
     scope      : "post"
   },
   useRadius: {
