@@ -237,6 +237,15 @@ properties = {
     value      : 0,
     scope      : "post"
   },
+  // CUSTOM: machine max spindle RPM - caps spindle speed and scales G94 feedrates
+  maximumSpindleRPM: {
+    title      : "Maximum spindle RPM",
+    description: "Caps the spindle speed to this value for all operations. G94 feedrates are scaled proportionally to maintain the same feed per tooth. Set to 0 to disable.",
+    group      : "tool",
+    type       : "integer",
+    value      : 0,
+    scope      : ["post", "machine"]
+  },
 
   // ---- Cycles & Smoothing ----
   useG284: {
@@ -511,6 +520,7 @@ var bOutput = createOutputVariable({prefix:"B"}, abcFormat);
 var cOutput = createOutputVariable({prefix:"C"}, abcFormat);
 var feedOutput = createOutputVariable({prefix:"F"}, feedFormat);
 var sOutput = createOutputVariable({prefix:"S", control:CONTROL_FORCE}, rpmFormat);
+var spindleSpeedScale = 1; // ratio of effective/programmed RPM; < 1.0 when capped by maximumSpindleRPM
 var inverseTimeOutput = createOutputVariable({prefix:"F", control:CONTROL_FORCE}, inverseTimeFormat);
 var loadMonitorOutput = createOutputVariable({prefix:"VSLDT[1, ", suffix:"]", control:CONTROL_FORCE}, integerFormat);
 
@@ -2386,8 +2396,24 @@ function onDwell(seconds) {
   writeBlock(gFormat.format(4), "F" + secFormat.format(seconds));
 }
 
+// Returns the RPM capped to the effective maximum (pure, no side effects).
+// Precedence: machine configuration > maximumSpindleRPM property > no limit.
+function getEffectiveSpindleRPM(rpm) {
+  var machineMax = machineConfiguration.getMaximumSpindleSpeed();
+  var propMax = getProperty("maximumSpindleRPM");
+  var maxRPM = (machineMax > 0) ? machineMax : (propMax > 0 ? propMax : 0);
+  return (maxRPM > 0 && rpm > maxRPM) ? maxRPM : rpm;
+}
+
+// Returns the capped RPM and updates spindleSpeedScale for use in getFeed().
+function applyMaxSpindleRPM(rpm) {
+  var effective = getEffectiveSpindleRPM(rpm);
+  spindleSpeedScale = (rpm > 0) ? (effective / rpm) : 1;
+  return effective;
+}
+
 function onSpindleSpeed(spindleSpeed) {
-  writeBlock(sOutput.format(spindleSpeed));
+  writeBlock(sOutput.format(applyMaxSpindleRPM(spindleSpeed)));
 }
 
 function onCycle() {
@@ -2474,7 +2500,7 @@ function writeDrillCycle(cycle, x, y, z) {
     writeBlock(gFeedModeModal.format(94));
     var g71 = z71Output.format(cycle.clearance);
 
-    var F = cycle.feedrate;
+    var F = cycle.feedrate * spindleSpeedScale;
     var P = !cycle.dwell ? 0 : clamp(1, cycle.dwell * 1000, 99999999); // in milliseconds
     switch (cycleType) {
     case "drilling":
@@ -2579,7 +2605,7 @@ function writeDrillCycle(cycle, x, y, z) {
         conditional(P > 0, "P" + secFormat.format(P / 1000.0)),
         "Q" + xyzFormat.format(cycle.incrementalDepth),
         "F" + pitchFormat.format((gFeedModeModal.getCurrent() == 95) ? tool.getThreadPitch() : F), // for G95 F is pitch, for G94 F is pitch*spindle rpm
-        sOutput.format(spindleSpeed),
+        sOutput.format(applyMaxSpindleRPM(spindleSpeed)),
         "E0", // spindle position
         mFormat.format(53)
       );
@@ -3476,7 +3502,7 @@ function onCommand(command) {
     return;
   case COMMAND_START_SPINDLE:
     forceSpindleSpeed = false;
-    writeBlock(sOutput.format(spindleSpeed), mFormat.format(tool.clockwise ? 3 : 4));
+    writeBlock(sOutput.format(applyMaxSpindleRPM(spindleSpeed)), mFormat.format(tool.clockwise ? 3 : 4));
     return;
   case COMMAND_STOP_SPINDLE:
     writeBlock(mFormat.format(5));
@@ -4012,7 +4038,7 @@ function getFeed(f) {
     }
     currentFeedId = undefined; // force parametric feed next time
   }
-  return feedOutput.format(f); // use feed value
+  return feedOutput.format(f * spindleSpeedScale); // use feed value, scaled when RPM is capped
 }
 
 function validateCommonParameters() {
@@ -4052,8 +4078,9 @@ function validateCommonParameters() {
 
 function validateToolData() {
   var _default = 99999;
+  var _propMaxRPM = getProperty("maximumSpindleRPM");
   var _maximumSpindleRPM = machineConfiguration.getMaximumSpindleSpeed() > 0 ? machineConfiguration.getMaximumSpindleSpeed() :
-    settings.maximumSpindleRPM == undefined ? _default : settings.maximumSpindleRPM;
+    (_propMaxRPM > 0 ? _propMaxRPM : (settings.maximumSpindleRPM == undefined ? _default : settings.maximumSpindleRPM));
   var _maximumToolNumber = machineConfiguration.isReceived() && machineConfiguration.getNumberOfTools() > 0 ? machineConfiguration.getNumberOfTools() :
     settings.maximumToolNumber == undefined ? _default : settings.maximumToolNumber;
   var _maximumToolLengthOffset = settings.maximumToolLengthOffset == undefined ? _default : settings.maximumToolLengthOffset;
@@ -4738,7 +4765,7 @@ function writeToolCall(tool, insertToolCall) {
 function startSpindle(tool, insertToolCall) {
   if (tool.type != TOOL_PROBE) {
     var spindleSpeedIsRequired = insertToolCall || forceSpindleSpeed || isFirstSection() ||
-      rpmFormat.areDifferent(spindleSpeed, sOutput.getCurrent()) ||
+      rpmFormat.areDifferent(getEffectiveSpindleRPM(spindleSpeed), sOutput.getCurrent()) ||
       (tool.clockwise != getPreviousSection().getTool().clockwise);
 
     writeStartBlocks(spindleSpeedIsRequired, function () {
