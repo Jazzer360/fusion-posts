@@ -86,20 +86,26 @@ groupDefinitions = {
     description: "Rotary-tombstone WCS spacing/offset and multi-WCS pattern subprogram reuse.",
     order      : 5
   },
+  // CUSTOM: APC (automatic pallet changer) operating modes.
+  pallets: {
+    title      : "Pallet Changing (APC)",
+    description: "2-pallet APC operating mode: single-pallet load/unload or continuous lights-out cycling with incremented work offsets.",
+    order      : 6
+  },
   probing: {
     title      : "Probing",
     description: "Probing macro selection (Renishaw O9901 vs stock Okuma) and inspection results-file behavior.",
-    order      : 6
+    order      : 7
   },
   programBehavior: {
     title      : "Program Behavior",
     description: "Optional stops and subroutine-style program output.",
-    order      : 7
+    order      : 8
   },
   output: {
     title      : "Program Output & Formatting",
     description: "Sequence numbers, word spacing, and operation notes.",
-    order      : 8
+    order      : 9
   }
 };
 
@@ -390,6 +396,53 @@ properties = {
     group      : "tombstone",
     type       : "boolean",
     value      : true,
+    scope      : "post"
+  },
+
+  // ---- Pallet Changing (APC) ----
+  // CUSTOM: 2-pallet automatic pallet changer (APC) operating mode. M60 swaps the
+  // machining pallet with the load-station pallet; VPLTK reads which pallet (1 or 2)
+  // is currently in the machine.
+  palletMode: {
+    title      : "Pallet operating mode",
+    description: "APC operating mode. 'No Pallets' outputs the program unchanged. 'Single Pallet' loads the specified pallet at start (skipping the M60 swap if it is already in the machine) and swaps it out at program end. 'Continuous' machines the loaded pallet, swaps, machines the other pallet with work offsets incremented by the unique-WCS count, swaps back, and loops forever with a GOTO. The other pallet settings only take effect when this is not 'No Pallets'.",
+    group      : "pallets",
+    type       : "enum",
+    values     : [
+      {title:"No Pallets", id:"none"},
+      {title:"Single Pallet", id:"single"},
+      {title:"Continuous", id:"continuous"}
+    ],
+    value      : "none",
+    scope      : "post"
+  },
+  palletStartSource: {
+    title      : "Starting pallet source",
+    description: "How 'Starting pallet value' is interpreted. 'Pallet number' treats it as a literal pallet number (1 or 2). 'Common variable' treats it as a user common-variable index, so the post compares against VC<value> and the operator can drive the starting pallet from the control.",
+    group      : "pallets",
+    type       : "enum",
+    values     : [
+      {title:"Pallet number", id:"pallet"},
+      {title:"Common variable", id:"variable"}
+    ],
+    value      : "pallet",
+    scope      : "post"
+  },
+  palletStartValue: {
+    title      : "Starting pallet value",
+    description: "The pallet to load/verify at program start. When 'Starting pallet source' is 'Pallet number' this is the literal pallet (1 or 2); when it is 'Common variable' this is the VC index whose value (set at the control) holds the pallet number. Used by both Single Pallet and Continuous modes.",
+    group      : "pallets",
+    type       : "integer",
+    value      : 1,
+    range      : [1, 200],
+    scope      : "post"
+  },
+  palletLoopLabel: {
+    title      : "Continuous loop label",
+    description: "The label used for the Continuous-mode loop target, emitted as N<label> (e.g. NSTART) and jumped to with GOTO. May be alphanumeric, up to 5 characters (excluding the N prefix). An alphanumeric label avoids any collision with numeric sequence numbers.",
+    group      : "pallets",
+    type       : "string",
+    value      : "START",
     scope      : "post"
   },
 
@@ -855,6 +908,184 @@ function getTombstoneOpeningABC() {
   return new Vector(v[0], v[1], v[2]);
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// CUSTOM: Pallet changing (2-pallet APC) support.
+//
+// M60 swaps the two shuttle pallets. VPLTK is the common variable holding which
+// pallet (1 or 2) is currently in the machine, so "load a specific pallet" is
+// done by comparing VPLTK to the wanted pallet and issuing M60 only when it
+// differs. Continuous mode duplicates the machining body once per pallet, with
+// the second copy's part work offsets incremented by the unique-WCS count, and
+// loops forever with a GOTO. See the "Pallet Changing (APC)" properties.
+///////////////////////////////////////////////////////////////////////////////
+
+// When true (Continuous capture phase), WCS numbers are emitted wrapped in
+// PALLET_WCS_SENTINEL so the second pallet copy can increment them safely.
+var palletCapturing = false;
+var PALLET_WCS_SENTINEL = "\x01";
+
+// Continuous-mode body accumulator. This kernel's output redirection is
+// SINGLE-LEVEL (redirectToBuffer does not nest), and the subprogram machinery
+// needs that one redirection for each subprogram body. So we cannot simply hold a
+// body redirection open across the whole program. Instead we capture the main body
+// into this string and "pause" it around every subprogram: palletBodyFlush() saves
+// the buffered body and releases the redirection before a subprogram opens, and
+// palletBodyResume() reopens an empty body buffer after the subprogram closes.
+// null = not capturing (No-Pallets / Single modes are unaffected).
+var palletBodyBuffer = null;
+
+function palletBodyFlush() {
+  // Only ever release the BODY redirection, never a subprogram's: redirectActive is
+  // true exactly when a subprogram owns the (single) redirection, so we skip then.
+  if (palletBodyBuffer !== null && !subprogramState.redirectActive && isRedirecting()) {
+    palletBodyBuffer += getRedirectionBuffer();
+    closeRedirection();
+  }
+}
+function palletBodyResume() {
+  if (palletBodyBuffer !== null) {
+    redirectToBuffer();
+  }
+}
+
+// Returns the operand used in "IF [VPLTK EQ <expr>]": either a literal pallet
+// number or a VC<index> common variable, per the 'palletStartSource' property.
+function getStartPalletExpr() {
+  if (getProperty("palletStartSource") == "variable") {
+    return "VC" + getProperty("palletStartValue");
+  }
+  return String(getProperty("palletStartValue"));
+}
+
+// Sorted ascending list of the unique work offsets used across all sections.
+// Independent of the tombstone spacing gate so it is always available.
+function getUniqueWorkOffsets() {
+  var seen = {};
+  var list = [];
+  var n = getNumberOfSections();
+  for (var s = 0; s < n; ++s) {
+    var off = getSection(s).workOffset;
+    if (off > 0 && !seen[off]) {
+      seen[off] = true;
+      list.push(off);
+    }
+  }
+  list.sort(function (a, b) { return a - b; });
+  return list;
+}
+
+// Per-pallet work-offset delta for Continuous mode = unique-WCS count.
+function getPalletWcsIncrement() {
+  return getUniqueWorkOffsets().length;
+}
+
+// Emits the start-of-program block that guarantees the wanted pallet is loaded:
+// skip the M60 swap when VPLTK already equals the target, otherwise swap once
+// (enough on a 2-pallet machine). Also plants the N<label> jump target used as
+// the Continuous loop top.
+function writeEnsureStartPallet(label) {
+  var expr = getStartPalletExpr();
+  writeComment("ENSURE PALLET " + expr + " IS LOADED");
+  writeBlock("IF [VPLTK EQ " + expr + "] N" + label);
+  writeBlock(mFormat.format(60), "(PALLET CHANGE)");
+  writeBlock("N" + label);
+}
+
+// WCS-number formatters. During Continuous capture they wrap the number in the
+// sentinel so the per-pallet replay can increment it; otherwise they behave
+// exactly like the original output (hFormat / xyzFormat).
+function wcsH(n) {
+  if (palletCapturing) {
+    return "H" + PALLET_WCS_SENTINEL + n + PALLET_WCS_SENTINEL;
+  }
+  return hFormat.format(n);
+}
+function wcsPH(n) {
+  if (palletCapturing) {
+    return "PH=" + PALLET_WCS_SENTINEL + n + PALLET_WCS_SENTINEL;
+  }
+  return "PH=" + xyzFormat.format(n);
+}
+
+// Replaces every sentinel-wrapped WCS number in a captured body with the number
+// plus 'delta' (delta 0 reproduces the originals). The H/PH= prefix is already
+// literal text in the buffer, so only the bare number is substituted.
+function substitutePalletWcs(body, delta) {
+  if (!delta) {
+    return body.replace(new RegExp(PALLET_WCS_SENTINEL, "g"), "");
+  }
+  var re = new RegExp(PALLET_WCS_SENTINEL + "(\\d+)" + PALLET_WCS_SENTINEL, "g");
+  return body.replace(re, function (_, num) {
+    return String(parseInt(num, 10) + delta);
+  });
+}
+
+// Validates the pallet properties and (for Continuous) that the incremented
+// second-pallet offsets stay within the WCS range and clear of the reserved
+// fixtureOffsetWCS. Called from onOpen once all sections are visible.
+function validatePalletConfiguration() {
+  var mode = getProperty("palletMode");
+  if (mode == "none") {
+    return;
+  }
+  var label = String(getProperty("palletLoopLabel"));
+  if (!/^[A-Za-z0-9]{1,5}$/.test(label)) {
+    error(localize("Continuous loop label must be alphanumeric and 1-5 characters."));
+    return;
+  }
+  if (getProperty("palletStartSource") == "pallet") {
+    var p = getProperty("palletStartValue");
+    if (p != 1 && p != 2) {
+      error(localize("Starting pallet value must be 1 or 2 when the source is 'Pallet number'."));
+      return;
+    }
+  }
+  if (mode != "continuous") {
+    return;
+  }
+  if (typeof isInspectionOperation == "function") {
+    for (var i = 0; i < getNumberOfSections(); ++i) {
+      if (isInspectionOperation(getSection(i))) {
+        error(localize("Continuous pallet mode is incompatible with inspection operations (both rely on GOTO and sequence numbers)."));
+        return;
+      }
+    }
+  }
+  if (getProperty("useLiveConnection")) {
+    error(localize("Continuous pallet mode is incompatible with the live connection (both rely on GOTO and sequence numbers)."));
+    return;
+  }
+  var offsets = getUniqueWorkOffsets();
+  if (offsets.length == 0) {
+    error(localize("Continuous pallet mode requires at least one work offset."));
+    return;
+  }
+  var increment = offsets.length;
+  for (var k = 0; k < offsets.length; ++k) {
+    var shifted = offsets[k] + increment;
+    if (shifted > 200) {
+      error(subst(localize("Continuous pallet mode would shift work offset %1 to %2, exceeding the maximum (200). Renumber the work offsets lower."), offsets[k], shifted));
+      return;
+    }
+    if (shifted == fixtureOffsetWCS) {
+      error(subst(localize("Continuous pallet mode would shift work offset %1 onto the reserved fixture offset (%2). Renumber the work offsets to avoid it."), offsets[k], fixtureOffsetWCS));
+      return;
+    }
+  }
+  // Warn (non-fatal) when the offsets are not a contiguous block, because the
+  // increment-by-count scheme then risks pallet-2 offsets colliding with pallet-1.
+  var contiguous = true;
+  for (var j = 1; j < offsets.length; ++j) {
+    if (offsets[j] != offsets[j - 1] + 1) {
+      contiguous = false;
+      break;
+    }
+  }
+  if (!contiguous) {
+    warning(localize("Continuous pallet mode: work offsets are not contiguous; the incremented pallet-2 offsets may overlap pallet-1. Use a contiguous block (e.g. H1-H4) to be safe."));
+  }
+}
+
 // CUSTOM: pattern instance index map — built in onOpen, consumed in onSection.
 // Maps String(patternId) -> [sectionId, ...] in section order.
 var wcsPatternIndex;
@@ -922,6 +1153,23 @@ function onOpen() {
   // enable tool life monitoring
   writeBlock(getProperty("toolLifeMonitor") ? "TLFON" : "");
   validateCommonParameters();
+
+  // CUSTOM: pallet changing (APC). All header/init output above is emitted once
+  // per program and is NOT part of the machining body. For Single/Continuous we
+  // now guarantee the correct pallet is loaded; for Continuous we then begin
+  // capturing the machining body so onClose can replay it once per pallet with
+  // incremented work offsets.
+  validatePalletConfiguration();
+  var palletMode = getProperty("palletMode");
+  if (palletMode != "none") {
+    writeln("");
+    writeEnsureStartPallet(getProperty("palletLoopLabel"));
+  }
+  if (palletMode == "continuous") {
+    palletCapturing = true;
+    palletBodyBuffer = ""; // begin accumulating the machining body (see palletBodyFlush/Resume)
+    redirectToBuffer();
+  }
 }
 
 function setSmoothing(mode) {
@@ -2051,21 +2299,22 @@ function writeFixtureOffset(abc, reset) {
       conditional(machineConfiguration.isMachineCoordinate(2), "PC=" + abcFormat.format(oo88Abc.z)),
       conditional(machineConfiguration.isMachineCoordinate(1), "PB=" + abcFormat.format(oo88Abc.y)),
       conditional(machineConfiguration.isMachineCoordinate(0), "PA=" + abcFormat.format(oo88Abc.x)),
-      "PH=" + xyzFormat.format(currentSection.workOffset),
-      "PP=" + xyzFormat.format(fixtureOffsetWCS)
+      wcsPH(currentSection.workOffset), // CUSTOM: tokenized for Continuous-pallet WCS increment
+      "PP=" + xyzFormat.format(fixtureOffsetWCS) // reserved fixture offset - never incremented
     );
     var wcs = abc.isZero() ? currentSection.workOffset : fixtureOffsetWCS
-    writeBlock(gFormat.format(15), hFormat.format(wcs), `(Temp WCS# ${wcs})`);
+    // CUSTOM: only the part work offset is tokenized; the reserved fixtureOffsetWCS stays literal.
+    writeBlock(gFormat.format(15), (wcs == fixtureOffsetWCS ? hFormat.format(wcs) : wcsH(wcs)), `(Temp WCS# ${wcs})`);
     break;
   case "G605":
     if (abc.isZero()) {
       if (state.twpIsActive) {
         writeBlock(gRotationModal.format(604));
-        writeBlock(gFormat.format(15), hFormat.format(currentSection.workOffset));
+        writeBlock(gFormat.format(15), wcsH(currentSection.workOffset)); // CUSTOM: tokenized for pallet increment
       }
     } else {
       gRotationModal.reset();
-      writeBlock(gRotationModal.format(605), hFormat.format(currentSection.workOffset), "Q" + fixtureOffsetWCS,
+      writeBlock(gRotationModal.format(605), wcsH(currentSection.workOffset), "Q" + fixtureOffsetWCS, // CUSTOM: tokenized for pallet increment
         conditional(rotaryOffsetWCS != 0, "R" + rotaryOffsetWCS));
     }
     break;
@@ -3670,17 +3919,11 @@ function writeRetract() {
   }
 }
 
-function onClose() {
-  optionalSection = false;
-  if (isDPRNTopen) {
-    inspectionFileOpen();
-    inspectionPrintLine("END");
-    inspectionFileClose();
-    isDPRNTopen = false;
-  }
-  if (probeVariables.probeAngleMethod == "G68") {
-    cancelWorkPlane();
-  }
+// CUSTOM: end-of-pallet cleanup that must precede every M60 pallet swap - stop
+// cutting, retract Z, home XY, reset the B axis, and optionally G30 to secondary
+// home so the table is clear for the shuttle. Runs once for No-Pallets/Single and
+// once per pallet copy for Continuous (where it is captured into the body buffer).
+function writePerPalletEnd() {
   onCommand(COMMAND_COOLANT_OFF);
   onCommand(COMMAND_STOP_SPINDLE);
 
@@ -3703,7 +3946,12 @@ function onClose() {
   if (getProperty("gotoSecondaryHomeAtEnd")) {
     writeBlock(gFormat.format(30), "P" + getProperty("secondaryHomePositionNumber"));
   }
+}
 
+// CUSTOM: one-time program tail - disable monitoring, chip conveyor off, manual NC,
+// program end (M02/RTS) and subprograms. Runs once even in Continuous mode (after
+// the loop GOTO; the M02 is effectively unreachable but kept for a clean stop).
+function writeProgramTail() {
   setSpindleLoadMonitor(false); // disable spindle load monitoring
   if (getProperty("toolLifeMonitor")) {
     writeBlock("TLFOFF"); // disable tool life monitoring
@@ -3728,6 +3976,53 @@ function onClose() {
     writeSubprograms();
   }
   writeToolCheckEnd();
+}
+
+function onClose() {
+  optionalSection = false;
+  if (isDPRNTopen) {
+    inspectionFileOpen();
+    inspectionPrintLine("END");
+    inspectionFileClose();
+    isDPRNTopen = false;
+  }
+  if (probeVariables.probeAngleMethod == "G68") {
+    cancelWorkPlane();
+  }
+
+  // CUSTOM: pallet changing (APC) program end.
+  var palletMode = getProperty("palletMode");
+  if (palletMode == "continuous") {
+    // The end-of-pallet cleanup is still redirected, so it becomes the tail of the
+    // captured body. Close the capture, then replay the body once per pallet with
+    // the part work offsets incremented by the unique-WCS count, an M60 swap after
+    // each copy, and a GOTO back to the loop label to run forever.
+    writePerPalletEnd();
+    palletCapturing = false;
+    palletBodyFlush(); // flush the final body segment and release the redirection
+    var body = palletBodyBuffer;
+    palletBodyBuffer = null;
+    var increment = getPalletWcsIncrement();
+    for (var p = 0; p < 2; ++p) {
+      if (p > 0) {
+        writeln("");
+      }
+      writeComment("PALLET COPY " + (p + 1) + " OF 2");
+      write(substitutePalletWcs(body, p * increment));
+      writeBlock(mFormat.format(60), "(PALLET CHANGE)"); // swap to the next pallet
+    }
+    // After the second M60 the starting pallet is back in the machine, so jump to
+    // the label planted right after the start-pallet check in onOpen.
+    writeBlock("GOTO N" + getProperty("palletLoopLabel"));
+    writeProgramTail();
+  } else {
+    writePerPalletEnd();
+    if (palletMode == "single") {
+      // Shuffle the finished pallet out of the machine for unload.
+      writeBlock(mFormat.format(60), "(PALLET CHANGE)");
+    }
+    writeProgramTail();
+  }
 }
 
 function inspectionPrintLine() {
@@ -4718,7 +5013,14 @@ function writeWCS(section, wcsIsRequired) {
       forceWorkPlane();
     }
     writeStartBlocks(wcsIsRequired, function () {
-      writeBlock(section.wcs, `(WCS# ${section.workOffset})`);
+      // CUSTOM: during Continuous-pallet capture, build the G15 H<n> block via the
+      // sentinel formatter so the per-pallet replay can increment the WCS number;
+      // otherwise emit the kernel-formatted section.wcs unchanged.
+      if (palletCapturing) {
+        writeBlock(gFormat.format(15), wcsH(section.workOffset), `(WCS# ${section.workOffset})`);
+      } else {
+        writeBlock(section.wcs, `(WCS# ${section.workOffset})`);
+      }
     });
     currentWorkOffset = section.workOffset;
   }
@@ -5297,7 +5599,12 @@ var subprogramState = {
   patternIsActive        : false,       // Indicate if it's handling a pattern subprogram
   incrementalSubprogram  : false,       // Indicate if the current subprogram needs to go incremental mode
   incrementalMode        : false,       // Indicate if incremental mode is on
-  mainProgramNumber      : undefined    // The main program number
+  mainProgramNumber      : undefined,   // The main program number
+  // CUSTOM: tracks whether subprogramStart() currently has a subprogram redirection
+  // open. Used instead of isRedirecting() so subprogramEnd() only closes its OWN
+  // redirection and not an outer body buffer (Continuous pallet mode wraps the whole
+  // body in a redirection, which would otherwise be stolen here).
+  redirectActive         : false
 };
 
 function subprogramResolveSetting(_setting, _val, _comment) {
@@ -5315,6 +5622,9 @@ function subprogramResolveSetting(_setting, _val, _comment) {
  * @param {boolean} incremental If the subprogram needs to go incremental mode
  */
 function subprogramStart(initialPosition, abc, incremental) {
+  // CUSTOM: Continuous pallet capture - pause body capture (flush + release the
+  // single redirection) so this subprogram can use it. Resumed in subprogramEnd.
+  palletBodyFlush();
   var comment = getParameter("operation-comment", "");
   var startBlock;
   if (getProperty("useFilesForSubprograms")) {
@@ -5335,6 +5645,7 @@ function subprogramStart(initialPosition, abc, incremental) {
     redirectToBuffer();
     startBlock = subprogramResolveSetting(settings.subprograms.startBlock.embedded, subprogramState.currentSubprogram, comment);
   }
+  subprogramState.redirectActive = true; // CUSTOM: a subprogram redirection is now open (see subprogramEnd)
   writeln(startBlock);
 
   subprogramState.saveShowSequenceNumbers = getProperty("showSequenceNumbers", undefined);
@@ -5362,7 +5673,11 @@ function subprogramCall() {
 
 /** End of subprogram and close redirection. */
 function subprogramEnd() {
-  if (isRedirecting()) {
+  // CUSTOM: guard on our own redirectActive flag rather than isRedirecting(), so an
+  // outer body redirection (Continuous pallet capture) is never closed here. This is
+  // called every onSectionEnd (and at cycle boundaries) including for sections that
+  // opened no subprogram, so it must do nothing unless subprogramStart opened one.
+  if (subprogramState.redirectActive) {
     if (subprogramState.newSubprogram) {
       var finalPosition = getFramePosition(currentSection.getFinalPosition());
       var abc;
@@ -5390,6 +5705,8 @@ function subprogramEnd() {
       setProperty("showSequenceNumbers", subprogramState.saveShowSequenceNumbers);
     }
     closeRedirection();
+    subprogramState.redirectActive = false; // CUSTOM: our subprogram redirection is closed
+    palletBodyResume(); // CUSTOM: resume Continuous body capture paused in subprogramStart
   }
 }
 
