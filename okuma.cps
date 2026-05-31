@@ -48,6 +48,7 @@ allowedCircularPlanes = 1 << PLANE_XY; // allow XY plane only
 
 highFeedMapping = HIGH_FEED_NO_MAPPING; // must be set if axes are not synchronized
 highFeedrate = (unit == MM) ? 5000 : 200;
+allowFeedPerRevolutionDrilling = true; // CUSTOM: feed per rev - pass drilling cycle feeds in native per-rev units; Fusion stops pre-converting them and stops issuing the "Post does not support feed per revolution" warning; set to "FPRAll" if tapping cycles also need native per-rev feeds
 probeMultipleFeatures = true;
 
 // CUSTOM: post property groups with display titles, descriptions, and ordering.
@@ -574,6 +575,7 @@ var cOutput = createOutputVariable({prefix:"C"}, abcFormat);
 var feedOutput = createOutputVariable({prefix:"F"}, feedFormat);
 var sOutput = createOutputVariable({prefix:"S", control:CONTROL_FORCE}, rpmFormat);
 var spindleSpeedScale = 1; // ratio of effective/programmed RPM; < 1.0 when capped by maximumSpindleRPM
+var sectionFeedMode = FEED_PER_MINUTE; // CUSTOM: feed per rev - tracks the native unit of feeds for the current section; updated by onFeedMode()
 var inverseTimeOutput = createOutputVariable({prefix:"F", control:CONTROL_FORCE}, inverseTimeFormat);
 var loadMonitorOutput = createOutputVariable({prefix:"VSLDT[1, ", suffix:"]", control:CONTROL_FORCE}, integerFormat);
 
@@ -615,13 +617,13 @@ var settings = {
     // {id: COOLANT_THROUGH_TOOL, on: "M88 P3 (myComment)", off: "M89"}
     coolants: [
       {id:COOLANT_FLOOD, on:8},
-      {id:COOLANT_MIST, on:7},
-      {id:COOLANT_THROUGH_TOOL, on:50},
+      {id:COOLANT_MIST, on:125},
+      {id:COOLANT_THROUGH_TOOL, on:51},
       {id:COOLANT_AIR, on:12},
       {id:COOLANT_AIR_THROUGH_TOOL, on:[339]},
       {id:COOLANT_SUCTION},
-      {id:COOLANT_FLOOD_MIST},
-      {id:COOLANT_FLOOD_THROUGH_TOOL},
+      {id:COOLANT_FLOOD_MIST, on:[8, 125]},
+      {id:COOLANT_FLOOD_THROUGH_TOOL, on:[8, 51, 125]},
       {id:COOLANT_OFF, off:9}
     ],
     singleLineCoolant: false, // specifies to output multiple coolant codes in one line rather than in separate lines
@@ -1279,6 +1281,7 @@ function onSection() {
     initializeParametricFeeds(insertToolCall);
   }
   // Output modal commands here
+  sectionFeedMode = FEED_PER_MINUTE; // CUSTOM: feed per rev - reset to default; onFeedMode() will switch to G95 if Fusion sends per-rev feeds for this section
   writeBlock(gPlaneModal.format(17), gAbsIncModal.format(90), gFeedModeModal.format(94));
 
   // wcs
@@ -2665,6 +2668,15 @@ function onSpindleSpeed(spindleSpeed) {
   writeBlock(sOutput.format(applyMaxSpindleRPM(spindleSpeed)));
 }
 
+// CUSTOM: feed per rev - called by Fusion when feed mode changes (e.g. entering a per-rev drilling section);
+// returning true tells Fusion this post handles G95 natively so it doesn't pre-convert feeds.
+function onFeedMode(mode) {
+  sectionFeedMode = mode;
+  writeBlock(gFeedModeModal.format(mode == FEED_PER_REVOLUTION ? 95 : 94));
+  forceFeed();
+  return true;
+}
+
 function onCycle() {
   writeBlock(gPlaneModal.format(17));
   if (isProbeOperation()) {
@@ -2746,10 +2758,11 @@ function writeDrillCycle(cycle, x, y, z) {
   if (isFirstCyclePoint()) {
     // return to initial Z which is clearance plane and set absolute mode
     repositionToCycleClearance(cycle, x, y, z);
-    writeBlock(gFeedModeModal.format(94));
+    // CUSTOM: feed per rev - emit G95 when the operation uses per-rev feeds; feedrate arrives in native units
+    var _perRev = (sectionFeedMode == FEED_PER_REVOLUTION);
+    writeBlock(gFeedModeModal.format(_perRev ? 95 : 94));
     var g71 = z71Output.format(cycle.clearance);
-
-    var F = cycle.feedrate * spindleSpeedScale;
+    var F = _perRev ? cycle.feedrate : (cycle.feedrate * spindleSpeedScale);
     var P = !cycle.dwell ? 0 : clamp(1, cycle.dwell * 1000, 99999999); // in milliseconds
     switch (cycleType) {
     case "drilling":
@@ -2887,7 +2900,7 @@ function writeDrillCycle(cycle, x, y, z) {
       break;
     case "reaming":
       writeBlock(gFormat.format(71), g71);
-      var FA = cycle.retractFeedrate;
+      var FA = _perRev ? cycle.retractFeedrate : (cycle.retractFeedrate * spindleSpeedScale);
       writeBlock(
         gPlaneModal.format(17), gCycleModal.format(85),
         getCommonCycle(x, y, z, cycle.retract, cycle.clearance),
@@ -2910,7 +2923,7 @@ function writeDrillCycle(cycle, x, y, z) {
       break;
     case "boring":
       writeBlock(gFormat.format(71), g71);
-      var FA = cycle.retractFeedrate;
+      var FA = _perRev ? cycle.retractFeedrate : (cycle.retractFeedrate * spindleSpeedScale);
       writeBlock(
         gPlaneModal.format(17), gCycleModal.format(89),
         getCommonCycle(x, y, z, cycle.retract, cycle.clearance),
@@ -4316,8 +4329,9 @@ function getBodyLength(tool) {
 }
 
 function getFeed(f) {
-  if (getProperty("useG95")) {
-    return feedOutput.format(f / spindleSpeed); // use feed value
+  // CUSTOM: feed per rev - when in G95 mode the feedrate arrives in per-rev units; pass through unchanged
+  if (sectionFeedMode == FEED_PER_REVOLUTION) {
+    return feedOutput.format(f);
   }
   if (typeof activeMovements != "undefined" && activeMovements) {
     var feedContext = activeMovements[movement];
@@ -4333,7 +4347,7 @@ function getFeed(f) {
     }
     currentFeedId = undefined; // force parametric feed next time
   }
-  return feedOutput.format(f * spindleSpeedScale); // use feed value, scaled when RPM is capped
+  return feedOutput.format(f * spindleSpeedScale);
 }
 
 function validateCommonParameters() {
