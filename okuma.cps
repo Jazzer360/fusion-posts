@@ -663,7 +663,9 @@ var M = {
   LOAD_MONITOR_OFF      : 142, // M142 spindle load monitoring off
   LOAD_MONITOR_ON       : 143, // M143 spindle load monitoring on
   CHIP_CONVEYOR_OFF     : 278, // M278 chip conveyor off
-  CHIP_CONVEYOR_ON      : 279  // M279 chip conveyor on
+  CHIP_CONVEYOR_ON      : 279, // M279 chip conveyor on
+  CAS_OFF               : 510, // M510 Collision Avoidance System off
+  CAS_ON                : 511  // M511 Collision Avoidance System on
 };
 
 var gMotionModal = createOutputVariable({}, gFormat); // modal group 1 // G0-G3, ...
@@ -1171,21 +1173,25 @@ function validatePalletConfiguration() {
 // Maps String(patternId) -> [sectionId, ...] in section order.
 var wcsPatternIndex;
 
-function onOpen() {
-  circularOutputAccuracy = xyzFormat.getNumberOfDecimals();
-  // CUSTOM: index all patterned sections (multi-WCS and other patterns) so onSection
-  // can append [instance/total] to the operation comment.
+// CUSTOM: index all patterned sections (multi-WCS and other patterns) so
+// writeSectionHeader can append [instance/total] to the operation comment.
+function buildPatternIndex() {
   wcsPatternIndex = {};
-  var _pn = getNumberOfSections();
-  for (var _pi = 0; _pi < _pn; ++_pi) {
-    var _ps = getSection(_pi);
-    var _pid = _ps.getPatternId();
-    if (_pid !== 0) {
-      var _pk = String(_pid);
-      if (!wcsPatternIndex[_pk]) { wcsPatternIndex[_pk] = []; }
-      wcsPatternIndex[_pk].push(_ps.getId());
+  var n = getNumberOfSections();
+  for (var i = 0; i < n; ++i) {
+    var section = getSection(i);
+    var patternId = section.getPatternId();
+    if (patternId !== 0) {
+      var key = String(patternId);
+      if (!wcsPatternIndex[key]) { wcsPatternIndex[key] = []; }
+      wcsPatternIndex[key].push(section.getId());
     }
   }
+}
+
+function onOpen() {
+  circularOutputAccuracy = xyzFormat.getNumberOfDecimals();
+  buildPatternIndex();
   // define and enable machine configuration
   receivedMachineConfiguration = machineConfiguration.isReceived();
   if (typeof defineMachine == "function") {
@@ -1201,7 +1207,7 @@ function onOpen() {
     fifthAxisClamp.disable();
     sixthAxisClamp.disable();
   }
-  casModal.format(511); // CAS enabled by default
+  casModal.format(M.CAS_ON); // CAS enabled by default
 
   settings.workPlaneMethod.useTiltedWorkplane = getProperty("tiltedWorkPlaneMethod", "none") != "none";
   settings.retract.homeXY.onIndexing = getProperty("forceHomeOnIndexing") ? {axes:[X, Y]} : false;
@@ -2678,6 +2684,8 @@ function getRotaryDirectionCode(abc) {
     var delta = outputs[axis].getResultingValue(abc.getCoordinate(axis)) -
       outputs[axis].getResultingValue(getCurrentABC().getCoordinate(axis));
     var pi = outputs[axis].getResultingValue(Math.PI);
+    // M15/M16: table rotation direction codes. Left as raw numbers - which one is
+    // CW vs CCW on this machine is unconfirmed (M16 here is the negative-delta branch).
     if (((delta < 0) && (delta > -pi)) || (delta > pi)) {
       return rotaryAxisDirectionModal.format(16);
     } else if (abcFormat.getResultingValue(delta) != 0) {
@@ -2689,7 +2697,7 @@ function getRotaryDirectionCode(abc) {
 
 function setCAS(mode) {
   if (getProperty("useCAS")) {
-    var code = casModal.format(mode ? 511 : 510);
+    var code = casModal.format(mode ? M.CAS_ON : M.CAS_OFF);
     writeBlock(code ? formatWords(code, formatComment(mode ? "ENABLE CAS" : "DISABLE CAS")) : "");
   }
 }
