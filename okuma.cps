@@ -2308,7 +2308,7 @@ function writeFixtureOffset(abc, reset) {
     );
     var wcs = abc.isZero() ? currentSection.workOffset : fixtureOffsetWCS
     // CUSTOM: only the part work offset is tokenized; the reserved fixtureOffsetWCS stays literal.
-    writeBlock(gFormat.format(15), (wcs == fixtureOffsetWCS ? hFormat.format(wcs) : wcsH(wcs)), `(Temp WCS# ${wcs})`);
+    writeBlock(gFormat.format(15), (wcs == fixtureOffsetWCS ? hFormat.format(wcs) : wcsH(wcs)), "(Temp WCS# " + wcs + ")");
     break;
   case "G605":
     if (abc.isZero()) {
@@ -4867,9 +4867,9 @@ function writeWCS(section, wcsIsRequired) {
       // sentinel formatter so the per-pallet replay can increment the WCS number;
       // otherwise emit the kernel-formatted section.wcs unchanged.
       if (palletCapturing) {
-        writeBlock(gFormat.format(15), wcsH(section.workOffset), `(WCS# ${section.workOffset})`);
+        writeBlock(gFormat.format(15), wcsH(section.workOffset), "(WCS# " + section.workOffset + ")");
       } else {
-        writeBlock(section.wcs, `(WCS# ${section.workOffset})`);
+        writeBlock(section.wcs, "(WCS# " + section.workOffset + ")");
       }
     });
     currentWorkOffset = section.workOffset;
