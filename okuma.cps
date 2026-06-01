@@ -609,6 +609,8 @@ var G = {
   INCREMENTAL      : 91,  // G91  incremental positioning
   FEED_PER_MIN     : 94,  // G94  feed per minute
   FEED_PER_REV     : 95,  // G95  feed per revolution
+  UNIT_INCH        : 20,  // G20  inch
+  UNIT_MM          : 21,  // G21  millimeter
   CYCLE_CLEARANCE  : 71,  // G71  Okuma canned-cycle Z clearance-plane preamble
   CYCLE_CANCEL     : 80,  // G80  canned cycle cancel
   CYCLE_DRILL      : 81,  // G81  drilling
@@ -626,7 +628,35 @@ var G = {
   CYCLE_BACK_BORE  : 87,  // G87  back boring
   CYCLE_BORE       : 89,  // G89  boring with dwell (feed out)
   RETRACT_INITIAL  : 98,  // G98  return to initial level
-  RETRACT_RPLANE   : 99   // G99  return to R level
+  RETRACT_RPLANE   : 99,  // G99  return to R level
+  HOME_SECONDARY   : 30   // G30  return to secondary reference point (P<n>)
+};
+
+// CUSTOM: named M-codes (same idea as G above). Codes whose meaning is documented
+// by the surrounding logic/properties are named here; any that remain raw numbers
+// are noted at their call site because their machine meaning isn't yet confirmed.
+var M = {
+  STOP                  : 0,   // M0   program stop
+  OPTIONAL_STOP         : 1,   // M1   optional stop
+  END                   : 2,   // M2   program end
+  SPINDLE_CW            : 3,   // M3   spindle on, clockwise
+  SPINDLE_CCW           : 4,   // M4   spindle on, counterclockwise
+  SPINDLE_STOP          : 5,   // M5   spindle stop
+  TOOL_CHANGE           : 6,   // M6   tool change
+  ORIENT_SPINDLE        : 19,  // M19  spindle orientation
+  CYCLE_RETURN_SPECIFIED: 53,  // M53  fixed-cycle return to specified (G71) level (group 13, modal)
+  CYCLE_RETURN_RPLANE   : 54,  // M54  fixed-cycle return to R level (group 13, modal)
+  PALLET_CHANGE         : 60,  // M60  APC pallet swap
+  COOLANT_FLOOD         : 8,   // M8   flood coolant
+  COOLANT_OFF           : 9,   // M9   coolant off
+  COOLANT_AIR           : 12,  // M12  air blast
+  COOLANT_THROUGH       : 51,  // M51  through-tool coolant
+  COOLANT_MIST          : 125, // M125 mist coolant
+  COOLANT_AIR_THROUGH   : 339, // M339 air through tool
+  LOAD_MONITOR_OFF      : 142, // M142 spindle load monitoring off
+  LOAD_MONITOR_ON       : 143, // M143 spindle load monitoring on
+  CHIP_CONVEYOR_OFF     : 278, // M278 chip conveyor off
+  CHIP_CONVEYOR_ON      : 279  // M279 chip conveyor on
 };
 
 var gMotionModal = createOutputVariable({}, gFormat); // modal group 1 // G0-G3, ...
@@ -1190,9 +1220,9 @@ function onOpen() {
   }
 
   // absolute coordinates and feed per min
-  writeBlock(gFormat.format(40), gCycleModal.format(80), gAbsIncModal.format(90), gFeedModeModal.format(94), gPlaneModal.format(17));
+  writeBlock(gFormat.format(G.COMP_CANCEL), gCycleModal.format(G.CYCLE_CANCEL), gAbsIncModal.format(G.ABSOLUTE), gFeedModeModal.format(G.FEED_PER_MIN), gPlaneModal.format(G.PLANE_XY));
   // writeBlock("VINCH=" + (unit == MM ? 2 : 3));
-  writeBlock(gUnitModal.format(unit == MM ? 21 : 20));
+  writeBlock(gUnitModal.format(unit == MM ? G.UNIT_MM : G.UNIT_INCH));
 
   // enable tool life monitoring
   writeBlock(getProperty("toolLifeMonitor") ? "TLFON" : "");
@@ -2821,7 +2851,7 @@ function emitCanned(gCode, retractMode, g71, commonArgs, extraWords) {
     gCycleModal.format(gCode),
     commonArgs,
     extraWords,
-    mFormat.format(53) // M53: Okuma-specific, meaning unconfirmed - left as a raw code for now
+    mFormat.format(M.CYCLE_RETURN_SPECIFIED) // M53: fixed-cycle return to the specified (G71) level
   );
 }
 
@@ -3617,10 +3647,10 @@ function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
 }
 
 var mapCommand = {
-  COMMAND_END                     : 2,
-  COMMAND_SPINDLE_CLOCKWISE       : 3,
-  COMMAND_SPINDLE_COUNTERCLOCKWISE: 4,
-  COMMAND_ORIENTATE_SPINDLE       : 19
+  COMMAND_END                     : M.END,
+  COMMAND_SPINDLE_CLOCKWISE       : M.SPINDLE_CW,
+  COMMAND_SPINDLE_COUNTERCLOCKWISE: M.SPINDLE_CCW,
+  COMMAND_ORIENTATE_SPINDLE       : M.ORIENT_SPINDLE
 };
 
 // CUSTOM: lock (M10/M20/M26) or unlock (M11/M21/M27) the enabled rotary axes.
@@ -3651,23 +3681,23 @@ function onCommand(command) {
   case COMMAND_STOP:
     // CUSTOM: send machine to the secondary reference point before the M00 stop.
     if (getProperty("gotoSecondaryHomeAtStop")) {
-      writeBlock(gFormat.format(30), "P" + getProperty("secondaryHomePositionNumber"));
+      writeBlock(gFormat.format(G.HOME_SECONDARY), "P" + getProperty("secondaryHomePositionNumber"));
     }
-    writeBlock(mFormat.format(0));
+    writeBlock(mFormat.format(M.STOP));
     forceSpindleSpeed = true;
     forceCoolant = true;
     return;
   case COMMAND_OPTIONAL_STOP:
-    writeBlock(mFormat.format(1));
+    writeBlock(mFormat.format(M.OPTIONAL_STOP));
     forceSpindleSpeed = true;
     forceCoolant = true;
     return;
   case COMMAND_START_SPINDLE:
     forceSpindleSpeed = false;
-    writeBlock(sOutput.format(applyMaxSpindleRPM(spindleSpeed)), mFormat.format(tool.clockwise ? 3 : 4));
+    writeBlock(sOutput.format(applyMaxSpindleRPM(spindleSpeed)), mFormat.format(tool.clockwise ? M.SPINDLE_CW : M.SPINDLE_CCW));
     return;
   case COMMAND_STOP_SPINDLE:
-    writeBlock(mFormat.format(5));
+    writeBlock(mFormat.format(M.SPINDLE_STOP));
     if (getProperty("dwellAfterStop") > 0) {
       onDwell(getProperty("dwellAfterStop"));
     }
@@ -3681,14 +3711,14 @@ function onCommand(command) {
         writeBlock("IF [ VTLCN EQ", toolFormat.format(tool.number), "]", skipNLines(5));
         writeBlock("IF [ VTLNN EQ", toolFormat.format(tool.number), "]", skipNLines(3));
         writeBlock("IF [ VTLNN EQ 0 ]", skipNLines(2));
-        writeBlock(mFormat.format(64));
-        writeToolBlock(mFormat.format(6), toolCall);
+        writeBlock(mFormat.format(64)); // M64: machine-specific (tool-preload related); meaning unconfirmed, left raw
+        writeToolBlock(mFormat.format(M.TOOL_CHANGE), toolCall);
       } else {
         if (!isFirstSection()) {
           writeComment(toolCall);
-          writeToolBlock(mFormat.format(6));
+          writeToolBlock(mFormat.format(M.TOOL_CHANGE));
         } else {
-          writeToolBlock(toolCall, mFormat.format(6));
+          writeToolBlock(toolCall, mFormat.format(M.TOOL_CHANGE));
         }
       }
       var preloadTool = getNextTool(tool.number != getFirstTool().number);
@@ -3700,10 +3730,10 @@ function onCommand(command) {
     } else {
       if (getProperty("safeToolChange")) {
         writeBlock("IF [ VTLCN EQ", toolFormat.format(tool.number), "]", skipNLines(2));
-        writeToolBlock(mFormat.format(6), toolCall);
+        writeToolBlock(mFormat.format(M.TOOL_CHANGE), toolCall);
         writeBlock(formatComment("*"));
       } else {
-        writeToolBlock(toolCall, mFormat.format(6));
+        writeToolBlock(toolCall, mFormat.format(M.TOOL_CHANGE));
       }
     }
     setProperty("showSequenceNumbers", saveShowSequenceNumbers);
@@ -3740,7 +3770,7 @@ function onSectionEnd() {
     subprogramEnd();
   }
   if (currentSection.isMultiAxis()) {
-    writeBlock(gFeedModeModal.format(94));
+    writeBlock(gFeedModeModal.format(G.FEED_PER_MIN));
   }
 
   if (!isLastSection()) {
