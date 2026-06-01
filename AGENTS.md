@@ -81,7 +81,7 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
     5. `multiAxis` "Multi-Axis": `useTableDirectionCodes`, `tiltedWorkPlaneMethod`, `fixtureOffsetWCS`, `rotaryOffsetWCS`, `useClampCodes`, `centerPointOutput`, `useCAS`, `useTPOC`.
     6. `tombstone` "Tombstone & Pattern Reuse": `tombstoneRotarySpacing`, `tombstoneRotaryInitial`, `reuseMultiWCSSubprograms`.
     7. `probing` "Probing": `useRenishawProbing`, `singleResultsFile`.
-    8. `programBehavior` "Program Behavior": `optionalStop`, `outputAsSubroutine` (plus the injected `useSubroutines` / `useFilesForSubprograms` from `subprograms.cpi`).
+    8. `programBehavior` "Program Behavior": `optionalStop`, `outputAsSubroutine`, `subroutineMainNumber`, `subroutineExtension` (plus the injected `useSubroutines` / `useFilesForSubprograms` from `subprograms.cpi`).
     9. `output` "Program Output & Formatting": `showSequenceNumbers`, `sequenceNumberStart`, `sequenceNumberIncrement`, `separateWordsWithSpace`, `showNotes` (plus the injected `writeMachine` / `writeTools` from `writeProgramHeader.cpi`).
   - Injected-property note: five user properties are added at runtime from `// >>>>> INCLUDED FROM include_files/*.cpi` blocks via `properties.<name> = { ... }` rather than being part of the main `properties` literal. Each had its `group:` value updated in place with an inline `// CUSTOM: re-grouped (was "...")` comment so an upstream re-vendor of those `.cpi` files is easy to re-reconcile. The five and their new groups: `useParametricFeed` → `cycles`, `writeMachine` → `output`, `writeTools` → `output`, `useSubroutines` → `programBehavior`, `useFilesForSubprograms` → `programBehavior`.
   - `groupDefinitions` is the standard Autodesk Post API mechanism for naming and ordering property groups. If a particular Fusion build doesn't honor it, the properties still work -- they'd just be shown grouped by the raw key (`machine`, `homePositions`, etc.) in alphabetical order, with no group descriptions.
@@ -95,12 +95,15 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - Output: `G30 P<n>` is emitted in `onClose`, after the final `writeRetract(Z)` and the optional XY-home retract, and before `setSpindleLoadMonitor(false)`. By that point spindle is stopped, coolant is off, the work plane is canceled, and Z is at retract height — so the absolute move to the secondary reference point is safe.
   - Marker comment: `// CUSTOM: optional G30 P<n>` (one site in `properties`, one in `onClose`).
 
-- **Output as subroutine (RTS instead of M02).**
-  - Property (group `programBehavior`):
-    - `outputAsSubroutine` (boolean, default `false`) — when on, the program ends with `RTS` instead of `M02` so it can be `CALL`ed from a separate main program. The opening `O<programName>` header doubles as the subroutine entry label; any internal subprograms appended via `writeSubprograms()` follow the closing `RTS` exactly as in the `M02` case.
-  - File extension: Fusion always writes the file with the default `.MIN` extension. The `extension` global is read once at script load and `getProperty()` does not return user-set values at module scope, so the extension cannot be flipped from a property at run time. **Rename the posted file to `.SSB` by hand after posting.**
-  - Implementation site: in `onClose`, the `onCommand(COMMAND_END)` call (which maps to `M2`) is replaced with `writeBlock("RTS")` when the property is on.
-  - Marker comment: `// CUSTOM: emit the program as a callable subroutine` (property + the `onClose` site).
+- **Output as subroutine + auto-generated main program (two files).**
+  - Properties (group `programBehavior`):
+    - `outputAsSubroutine` (boolean, default `false`) — when on, the toolpath is emitted as a subroutine (ending `RTS`) and a **separate main program** is generated.
+    - `subroutineMainNumber` (string, default `"1"`) — the O-name of the generated main program (1–4 alphanumeric, must differ from the toolpath program name).
+    - `subroutineExtension` (string, default `"SSB"`) — extension for the companion subprogram file the post writes.
+  - Behavior: Fusion's primary `.MIN` output becomes the small **main** program — `O<subroutineMainNumber>` / `(MAIN PROGRAM - CALLS O<program>)` / `CALL O<program>` / `M2`. The actual toolpath **subprogram** (header, body, `RTS`, any appended per-op subprograms and tool-life check) is captured into `subBodyBuffer` and written by the post via `redirectToFile` to a companion **`O<program>.<subroutineExtension>`** file (default `.SSB`). This solves the old fixed-`.MIN` limitation: the main is correctly `.MIN` and the subprogram is correctly `.SSB`, **no hand-renaming**.
+  - Mechanism: mirrors the Continuous-pallet whole-body capture. `subBodyBuffer` + `subBodyFlush()`/`subBodyResume()` pause the body redirection around each per-op subprogram (single-level redirection). Hooked into `subprogramStart`/`subprogramEnd` next to the pallet hooks; no-ops unless capturing. The main is written in `onOpen` (before the `O<program>` header), block numbering is reset so the subprogram starts at N1, and the buffer is flushed to the companion file at the end of `onClose`. **Mutually exclusive with Continuous pallet mode** (both capture the body) — errors if both are enabled.
+  - Implementation sites: `writeSubroutineMainProgram()` / `writeSubroutineCompanionFile()` / `getSubroutineMainName()` / `subBodyFlush()` / `subBodyResume()` (near the pallet body-buffer block); the `onOpen` capture-start hook; the `onClose` flush; and `writeProgramTail`'s existing `RTS`-vs-`M02` branch (still emits `RTS` into the subprogram).
+  - Marker comment: `// CUSTOM: "Output as subroutine"`.
 
 - **Optional `G30 P<n>` before every `M00` program stop.**
   - Property (group `homePositions`):

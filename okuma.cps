@@ -475,19 +475,39 @@ properties = {
     value      : true,
     scope      : "post"
   },
-  // CUSTOM: emit the program as a callable subroutine. Suppresses the final M02
-  // (the controller's main M02 would end execution prematurely) and lets the
-  // program's O<number> label + closing RTS serve as the subroutine entry/exit
-  // so a separate main program can CALL it. Fusion will still write the file
-  // with the default .MIN extension because the extension is fixed at script
-  // load and Fusion does not re-read it from user property values; rename the
-  // posted file to .SSB by hand after posting.
+  // CUSTOM: emit the toolpath as a callable subroutine plus a separate main program.
+  // Fusion's primary (.MIN) output becomes a tiny MAIN program - "O<main> / CALL
+  // O<program> / M2" - while the actual toolpath (ending RTS) is written by the post
+  // to a companion "O<program>.<subroutineExtension>" file (default .SSB). This
+  // sidesteps the extension limitation (Fusion fixes the primary extension at script
+  // load and won't change it from a property), so no file needs hand-renaming: the
+  // main is correctly .MIN and the subprogram is correctly .SSB.
   outputAsSubroutine: {
-    title      : "Output as subroutine (RTS instead of M02)",
-    description: "When enabled, the program ends with RTS instead of M02 so it can be CALLed from a separate main program. The O<program> header still acts as the entry label and any subprograms are appended after RTS. NOTE: Fusion always writes the file with the .MIN extension (the extension cannot be switched from a property at run time); rename the posted file to .SSB by hand.",
+    title      : "Output as subroutine (+ main program)",
+    description: "When enabled, the toolpath is emitted as a subroutine (ending RTS) written to a companion 'O<program>.<extension>' file (default .SSB), and Fusion's primary .MIN output becomes a small main program that does 'CALL O<program>' then M2. Set the main program's number with 'Subroutine main program number' and the companion extension with 'Subroutine file extension'. Incompatible with Continuous pallet mode.",
     group      : "programBehavior",
     type       : "boolean",
     value      : false,
+    scope      : "post"
+  },
+  // CUSTOM: O-number/name for the generated main program (must differ from the
+  // toolpath program name, which becomes the subprogram). Okuma rules: 1-4
+  // alphanumeric characters. Only used when 'Output as subroutine' is enabled.
+  subroutineMainNumber: {
+    title      : "Subroutine main program number",
+    description: "The O-number/name for the generated main program (the one that CALLs the toolpath subprogram). Must be 1-4 alphanumeric characters and different from the toolpath program name. Only used when 'Output as subroutine' is enabled.",
+    group      : "programBehavior",
+    type       : "string",
+    value      : "1",
+    scope      : "post"
+  },
+  // CUSTOM: file extension for the companion subprogram file written by the post.
+  subroutineExtension: {
+    title      : "Subroutine file extension",
+    description: "File extension (without the dot) for the companion subprogram file the post writes when 'Output as subroutine' is enabled. Defaults to SSB.",
+    group      : "programBehavior",
+    type       : "string",
+    value      : "SSB",
     scope      : "post"
   },
 
@@ -1029,6 +1049,71 @@ function palletBodyResume() {
   }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// CUSTOM: "Output as subroutine" companion-file support.
+//
+// When the outputAsSubroutine property is on, Fusion's primary (.MIN) output is
+// made into a tiny MAIN program (O<main> / CALL O<sub> / M2) and the entire
+// toolpath subprogram (ending RTS) is captured here and written by the post to a
+// companion "O<sub>.<ext>" file (default .SSB). This solves the fixed-extension
+// limitation - the main is correctly .MIN and the subprogram is correctly .SSB,
+// with no hand-renaming.
+//
+// The capture uses the same single-level-redirection dance as the pallet body
+// buffer above: subBodyFlush() saves + releases the body redirection before a
+// subprogram opens, subBodyResume() reopens it after. null = not capturing, so
+// these are no-ops unless outputAsSubroutine is on. It is mutually exclusive with
+// Continuous pallet mode (validated in onOpen), so the two buffers never coexist.
+///////////////////////////////////////////////////////////////////////////////
+var subBodyBuffer = null;
+
+function subBodyFlush() {
+  if (subBodyBuffer !== null && !subprogramState.redirectActive && isRedirecting()) {
+    subBodyBuffer += getRedirectionBuffer();
+    closeRedirection();
+  }
+}
+function subBodyResume() {
+  if (subBodyBuffer !== null) {
+    redirectToBuffer();
+  }
+}
+
+// The MAIN program's O-name (validated 1-4 alphanumeric, distinct from the
+// toolpath program name which becomes the subprogram).
+function getSubroutineMainName() {
+  var name = String(getProperty("subroutineMainNumber")).toUpperCase();
+  if (!/^[A-Z0-9]{1,4}$/.test(name)) {
+    error(localize("Subroutine main program number must be 1-4 alphanumeric characters."));
+  }
+  if (name == String(getProgramName()).toUpperCase()) {
+    error(localize("Subroutine main program number must differ from the toolpath program name."));
+  }
+  return name;
+}
+
+// Writes the small main program to the (primary) output: O<main>, a CALL of the
+// toolpath subprogram, and M2. Called once from onOpen before body capture starts.
+function writeSubroutineMainProgram() {
+  writeln("O" + getSubroutineMainName());
+  writeComment("MAIN PROGRAM - CALLS O" + getProgramName());
+  writeBlock("CALL O" + getProgramName());
+  writeBlock(mFormat.format(M.END));
+  writeln("");
+}
+
+// Flushes the captured subprogram body to the companion O<sub>.<ext> file.
+function writeSubroutineCompanionFile() {
+  subBodyFlush(); // final flush of any buffered tail
+  var body = subBodyBuffer;
+  subBodyBuffer = null;
+  var ext = String(getProperty("subroutineExtension")).replace(/^\./, "") || "SSB";
+  var path = FileSystem.getCombinedPath(FileSystem.getFolderPath(getOutputPath()), getProgramName() + "." + ext);
+  redirectToFile(path);
+  write(body);
+  closeRedirection();
+}
+
 // Returns the operand used in "IF [VPLTK EQ <expr>]": either a literal pallet
 // number or a VC<index> common variable, per the 'palletStartSource' property.
 function getStartPalletExpr() {
@@ -1221,6 +1306,20 @@ function onOpen() {
 
   if (!getProperty("separateWordsWithSpace")) {
     setWordSeparator("");
+  }
+
+  // CUSTOM: "Output as subroutine" - write the small MAIN program to Fusion's
+  // primary (.MIN) output, then begin capturing the whole toolpath subprogram into
+  // subBodyBuffer; onClose flushes it to the O<sub>.<ext> companion file. Everything
+  // emitted from the O<program> header onward thus lands in the subprogram file.
+  if (getProperty("outputAsSubroutine")) {
+    if (getProperty("palletMode") == "continuous") {
+      error(localize("Output as subroutine is incompatible with Continuous pallet mode (both capture the whole program body)."));
+    }
+    writeSubroutineMainProgram();
+    sequenceNumber = undefined; // restart block numbering for the subprogram file
+    subBodyBuffer = "";
+    redirectToBuffer();
   }
 
   writeln("O" + getProgramName());
@@ -3965,6 +4064,13 @@ function onClose() {
       writeBlock(mFormat.format(M.PALLET_CHANGE), "(PALLET CHANGE)");
     }
     writeProgramTail();
+    // CUSTOM: "Output as subroutine" - the whole toolpath subprogram (RTS and any
+    // appended subprograms/tool-check) has been captured into subBodyBuffer; write
+    // it out to the O<sub>.<ext> companion file. Fusion's primary output keeps only
+    // the small main program written in onOpen.
+    if (getProperty("outputAsSubroutine")) {
+      writeSubroutineCompanionFile();
+    }
   }
 }
 
@@ -5562,9 +5668,11 @@ function subprogramResolveSetting(_setting, _val, _comment) {
  * @param {boolean} incremental If the subprogram needs to go incremental mode
  */
 function subprogramStart(initialPosition, abc, incremental) {
-  // CUSTOM: Continuous pallet capture - pause body capture (flush + release the
-  // single redirection) so this subprogram can use it. Resumed in subprogramEnd.
+  // CUSTOM: pause whichever whole-body capture is active (Continuous pallet or
+  // subroutine output) - flush + release the single redirection so this subprogram
+  // can use it. Resumed in subprogramEnd. Both are no-ops when not capturing.
   palletBodyFlush();
+  subBodyFlush();
   var comment = getParameter("operation-comment", "");
   var startBlock;
   if (getProperty("useFilesForSubprograms")) {
@@ -5646,7 +5754,8 @@ function subprogramEnd() {
     }
     closeRedirection();
     subprogramState.redirectActive = false; // CUSTOM: our subprogram redirection is closed
-    palletBodyResume(); // CUSTOM: resume Continuous body capture paused in subprogramStart
+    palletBodyResume(); // CUSTOM: resume whole-body capture (pallet or subroutine) paused in subprogramStart
+    subBodyResume();
   }
 }
 
