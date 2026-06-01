@@ -11,18 +11,25 @@ This folder is a development workspace for customizing Autodesk Fusion 360 / Man
 When asked to modify a post, follow these rules:
 
 1. **Posts are JavaScript** with a `.cps` extension. Treat them as JS for syntax, but they run inside Fusion's post-processor engine — *not* Node.js. There is no `require`, no `npm`, no filesystem, and no DOM. Only the Post API documented at https://cam.autodesk.com/posts/reference/index.html is available.
-2. **No build step, no package manager, no test runner.** Iteration is: edit `.cps` → run a toolpath through the post inside Fusion → inspect generated NC code. The user handles the Fusion side.
+2. **No build step or package manager, but there IS an offline diff harness.** Normal iteration is: edit `.cps` → run a toolpath through the post inside Fusion → inspect generated NC code (the user handles the Fusion side). For *regression-checking a refactor*, you can also post sample toolpaths from the command line without Fusion:
+   - **Post CLI:** `…/AppData/Local/Autodesk/webdeploy/production/<hash>/Applications/CAM360/post.exe` (the `<hash>` dir changes between Fusion updates — glob for `post.exe`). Usage: `post.exe --noeditor --nobackup --quiet [--property NAME VALUE] <post.cps> <input.cnc> <output.MIN>`. Property *values* are evaluated as JS, so a string enum id must be passed quoted, e.g. `--property rotaryTableAxis '"5axis"'`.
+   - **Sample intermediates:** `…/.vscode/extensions/autodesk.hsm-post-processor-*/res/CNC files/` (subfolders `Milling/Drilling`, `Milling/2D`, `Milling/3+2`, `Probing/…`, etc.). The `Milling/Drilling` set covers every canned drill/tap/bore cycle.
+   - **Workflow:** post the sample set with the *current* post → snapshot the `.MIN` files → make the edit → post again → `diff` the two output dirs. Byte-identical `.MIN` output proves a refactor is behavior-preserving. The `.log` files differ only in timestamps/paths/checksums — ignore them. Note coverage gaps: 3+2 needs `rotaryTableAxis` set; probing needs a non-reserved `rotaryOffsetWCS`; some probe cycle types (corner, plane-angle, PCD, single-axis) have no sample and can only be verified by reading.
 3. **Reference documentation:** https://cam.autodesk.com/posts/reference/index.html — always consult this when unsure about an API (`writeBlock`, `gFormat`, `createFormat`, `onSection`, `onLinear`, `getProperty`, etc.). Fetch the page if needed rather than guessing.
-4. **Preserve the public post structure.** The base posts come from Autodesk's public repository and are periodically updated. Keep customizations:
+4. **Preserve the public post structure — EXCEPT `okuma.cps`, which is now a hard fork** (see the Upstream-update workflow note below). For posts still tracking upstream (`okuma lb3000 mill-turn.cps`), keep customizations:
    - Minimally invasive (don't refactor surrounding code).
    - Clearly marked with a comment starting with `// CUSTOM:` so they can be re-applied when the upstream post is updated. Grep for `CUSTOM:` to find every customization site.
    - Gated by a user-defined property (added to the `properties` object near the top of the post) whenever feasible, so behavior is toggleable from Fusion's Post Properties UI without editing the post.
+
+   For `okuma.cps` the "minimally invasive / don't refactor surrounding code" rule no longer applies — stock functions have been consolidated for maintainability and the file no longer diffs cleanly against any upstream revision. The `// CUSTOM:` markers and property-gating conventions still apply (they aid readability and toggling); they're just no longer a re-application aid against an upstream drop.
 5. **Match the surrounding style.** The Autodesk posts use ES5-style code (`var`, function expressions, no arrow functions, no template literals, no `let`/`const`, no destructuring). Do not introduce ES6+ syntax. Fusion's embedded engine is not full modern JS.
 6. **Property definitions** live in the `properties = { ... }` object near the top of the file. Each entry has `title`, `description`, `group`, `type` (`boolean` | `integer` | `number` | `enum` | `string`), `value` (default), optional `range` for numerics, optional `values` array for enums, and `scope: "post"`. Read with `getProperty("name")`.
 
 ---
 
 ## Upstream-update workflow (branch-based)
+
+> **`okuma.cps` is a hard fork as of the 2026-05 maintainability overhaul.** Its stock functions were consolidated (canned-cycle dispatch, probe-cycle helpers, rotary/clamp helpers, ES5 normalization), so it no longer produces a clean line-diff against any Autodesk public revision. The "vendor drop → re-apply CUSTOM markers" sequence below **does not work for it** — a new upstream `okuma` revision must be reconciled by hand (read the upstream changelog/diff, then port relevant fixes into the forked structure, re-verifying with the offline diff harness). The branch-based workflow below still applies to posts that remain structurally upstream (e.g. `okuma lb3000 mill-turn.cps`).
 
 The base posts come from Autodesk's public library and get updated periodically. To reconcile updates with our customizations:
 
@@ -42,7 +49,7 @@ The base posts come from Autodesk's public library and get updated periodically.
 
 | File | Upstream Revision | Upstream Date | Status |
 |------|-------------------|---------------|--------|
-| `okuma.cps` | 44220 | 2026-04-01 | Active. Customized with optional `G30 P<n>` at program end (see below). |
+| `okuma.cps` | 44220 (forked) | 2026-04-01 | Active. **Hard fork** — heavily customized and structurally consolidated; no longer diffs cleanly against upstream. See Active Customizations. |
 | `okuma lb3000 mill-turn.cps` | 44210 | 2026-01-20 | Active. Customized for the Okuma LB15-II (older OSP control). See per-customization sections below. |
 
 Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and the Autodesk Post Processor Training Guide PDF were removed from the working tree but remain in git history (initial commit) if ever needed.
@@ -52,6 +59,15 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
 ## Active Customizations
 
 ### `okuma.cps`
+
+- **Maintainability consolidation (2026-05 overhaul).** Duplicated stock code was refactored into shared helpers; all changes were verified byte-identical against the offline diff harness (36 sample postings: drilling/2D milling, probing with Renishaw on/off, 3+2 indexed with clamp codes and a nonzero tombstone offset). Helpers added:
+  - `emitCanned(gCode, retractMode, g71, commonArgs, extraWords)` + nested `scaleFeed()`/`pWordMs()`/`cc()` — collapse the per-type scaffolding in `writeDrillCycle`; the three plain tapping cases now fall through to one block (deriving the G-code from `tool.type` + `useG284`), matching the existing chip-break tapping pattern.
+  - `renishaw9901(zRapid, midArgs)` — the shared shape of every Renishaw O9901 probe branch in `writeProbeCycle` (10 branches → one call each). The identical-modulo-token case pairs (inner/outer corner 9815/9816, x/y plane-angle, PCD hole/boss) were collapsed via fall-through + a `cycleType` selector. **Note:** corner/plane-angle/PCD cycles have no postable sample, so those were verified by reading, not by harness diff.
+  - `isMillingFluteType(t)` / `isDrillFamily(t)` / `isPolarMultiAxis()` — predicates replacing tool-type lists spelled out twice in `getToolComponents` and the duplicated polar-cycle guard.
+  - `clampMultiAxis(lock)` — `COMMAND_LOCK/UNLOCK_MULTI_AXIS` were identical apart from the M-codes (10/20/26 vs 11/21/27).
+  - `wrap0to2Pi(rad)` — the `[0, 2*PI)` modulo wrap shared by three tombstone sites (`applyTombstoneRotaryOffset` keeps its own inline `(0, 2*PI]` marker variant).
+  - `getUniqueWorkOffsets(includeZero)` — `initTombstoneRotaryWCS` now routes its unique-offset scan through this existing helper (the tombstone rank map passes `includeZero=true`).
+  - ES5 normalization: the three `(WCS# …)` template literals were converted to string concatenation (Fusion's engine + AGENTS.md rule 5 are ES5-only).
 
 - **Re-grouped post properties with `groupDefinitions` for sidebar layout.**
   - The stock post lumped most properties under generic groups (`preferences` / `configuration` / `formats` / `multiAxis`) with no display titles or ordering, so Fusion sorted them alphabetically and labeled them with the raw keys. The properties block is now reorganized into nine cohesive groups, displayed in the order below; the new top-level `groupDefinitions = { ... }` block (added immediately above `properties = { ... }`) controls each group's title, description, and `order` index. Property *definitions* inside the main `properties = { ... }` literal are reordered to match the same group sequence so the file reads top-to-bottom in display order. All property keys and types are unchanged -- only `group:` values and definition position were touched, so `getProperty("name")` callers and any saved Fusion configurations keep working.
