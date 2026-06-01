@@ -821,18 +821,9 @@ function initTombstoneRotaryWCS() {
   if (!spacing || spacing <= 0) {
     return; // axis detected (for normalization), but no per-WCS rank offset to build
   }
-  // Collect unique work offsets used in the program in ascending order.
-  var seen = {};
-  var list = [];
-  var n = getNumberOfSections();
-  for (var s = 0; s < n; ++s) {
-    var off = getSection(s).workOffset;
-    if (!seen[off]) {
-      seen[off] = true;
-      list.push(off);
-    }
-  }
-  list.sort(function (a, b) { return a - b; });
+  // Collect unique work offsets used in the program in ascending order (include
+  // any zero/negative offset so the rank map covers every section's workOffset).
+  var list = getUniqueWorkOffsets(true);
   for (var k = 0; k < list.length; ++k) {
     tombstoneWCSRank[list[k]] = k;
   }
@@ -843,6 +834,14 @@ function initTombstoneRotaryWCS() {
       spacing, tombstoneWCSCount
     ));
   }
+}
+
+// CUSTOM: wrap an angle (radians) into [0, 2*PI). Shared by the tombstone rotary
+// helpers below. applyTombstoneRotaryOffset keeps its own inline variant because
+// of the (0, 2*PI] "marker" semantics documented there.
+function wrap0to2Pi(rad) {
+  var twoPi = Math.PI * 2;
+  return ((rad % twoPi) + twoPi) % twoPi;
 }
 
 function applyTombstoneRotaryOffset(_section, abc) {
@@ -905,8 +904,7 @@ function getTombstoneOpeningABC() {
     return new Vector(0, 0, 0);
   }
   var v = [0, 0, 0];
-  var twoPi = Math.PI * 2;
-  v[tombstoneRotaryCoord] = ((toRad(initialDeg) % twoPi) + twoPi) % twoPi;
+  v[tombstoneRotaryCoord] = wrap0to2Pi(toRad(initialDeg));
   return new Vector(v[0], v[1], v[2]);
 }
 
@@ -960,14 +958,16 @@ function getStartPalletExpr() {
 }
 
 // Sorted ascending list of the unique work offsets used across all sections.
-// Independent of the tombstone spacing gate so it is always available.
-function getUniqueWorkOffsets() {
+// Independent of the tombstone spacing gate so it is always available. By default
+// only positive offsets are returned; pass includeZero=true (tombstone rank map)
+// to also include any zero/negative work offset.
+function getUniqueWorkOffsets(includeZero) {
   var seen = {};
   var list = [];
   var n = getNumberOfSections();
   for (var s = 0; s < n; ++s) {
     var off = getSection(s).workOffset;
-    if (off > 0 && !seen[off]) {
+    if ((includeZero || off > 0) && !seen[off]) {
       seen[off] = true;
       list.push(off);
     }
@@ -2224,9 +2224,7 @@ function setWorkPlane(abc) {
         machineABC = applyTombstoneRotaryOffset(currentSection, machineABC);
         if (tombstoneRotaryCoord >= 0) {
           var mv = [machineABC.x, machineABC.y, machineABC.z];
-          var twoPi = Math.PI * 2;
-          mv[tombstoneRotaryCoord] = mv[tombstoneRotaryCoord] % twoPi;
-          if (mv[tombstoneRotaryCoord] < 0) { mv[tombstoneRotaryCoord] += twoPi; }
+          mv[tombstoneRotaryCoord] = wrap0to2Pi(mv[tombstoneRotaryCoord]);
           machineABC = new Vector(mv[0], mv[1], mv[2]);
         }
         if (settings.workPlaneMethod.useABCPrepositioning || machineABC.isZero()) {
@@ -2269,8 +2267,7 @@ function writeFixtureOffset(abc, reset) {
     var homeDeg = rankDeg + initialDeg;
     if (homeDeg) {
       var v = [abc.x, abc.y, abc.z];
-      var twoPi = Math.PI * 2;
-      v[tombstoneRotaryCoord] = ((v[tombstoneRotaryCoord] - toRad(homeDeg)) % twoPi + twoPi) % twoPi;
+      v[tombstoneRotaryCoord] = wrap0to2Pi(v[tombstoneRotaryCoord] - toRad(homeDeg));
       oo88Abc = new Vector(v[0], v[1], v[2]);
     }
   }
@@ -3582,6 +3579,23 @@ var mapCommand = {
   COMMAND_ORIENTATE_SPINDLE       : 19
 };
 
+// CUSTOM: lock (M10/M20/M26) or unlock (M11/M21/M27) the enabled rotary axes.
+// COMMAND_LOCK_MULTI_AXIS and COMMAND_UNLOCK_MULTI_AXIS differ only by these codes.
+function clampMultiAxis(lock) {
+  if (!machineConfiguration.isMultiAxisConfiguration()) {
+    return;
+  }
+  if (aOutput.isEnabled()) {
+    writeBlock(fourthAxisClamp.format(lock ? 10 : 11)); // A-axis
+  }
+  if (bOutput.isEnabled()) {
+    writeBlock(fifthAxisClamp.format(lock ? 20 : 21)); // B-axis
+  }
+  if (cOutput.isEnabled()) {
+    writeBlock(sixthAxisClamp.format(lock ? 26 : 27)); // C-axis
+  }
+}
+
 function onCommand(command) {
   switch (command) {
   case COMMAND_COOLANT_OFF:
@@ -3651,30 +3665,10 @@ function onCommand(command) {
     setProperty("showSequenceNumbers", saveShowSequenceNumbers);
     return;
   case COMMAND_LOCK_MULTI_AXIS:
-    if (machineConfiguration.isMultiAxisConfiguration()) {
-      if (aOutput.isEnabled()) {
-        writeBlock(fourthAxisClamp.format(10)); // lock A-axis
-      }
-      if (bOutput.isEnabled()) {
-        writeBlock(fifthAxisClamp.format(20)); // lock B-axis
-      }
-      if (cOutput.isEnabled()) {
-        writeBlock(sixthAxisClamp.format(26)); // lock C-axis
-      }
-    }
+    clampMultiAxis(true);
     return;
   case COMMAND_UNLOCK_MULTI_AXIS:
-    if (machineConfiguration.isMultiAxisConfiguration()) {
-      if (aOutput.isEnabled()) {
-        writeBlock(fourthAxisClamp.format(11)); // unlock A-axis
-      }
-      if (bOutput.isEnabled()) {
-        writeBlock(fifthAxisClamp.format(21)); // unlock B-axis
-      }
-      if (cOutput.isEnabled()) {
-        writeBlock(sixthAxisClamp.format(27)); // unlock C-axis
-      }
-    }
+    clampMultiAxis(false);
     return;
   case COMMAND_BREAK_CONTROL:
     return;
