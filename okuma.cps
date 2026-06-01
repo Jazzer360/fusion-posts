@@ -5431,52 +5431,48 @@ function writeProgramHeader() {
 
   // dump tool information
   if (getProperty("writeTools")) {
-    if (false) { // set to true to use the post kernel version of the tool list
-      writeToolTable(TOOL_NUMBER_COL);
-    } else {
-      var zRanges = {};
-      if (is3D()) {
-        var numberOfSections = getNumberOfSections();
-        for (var i = 0; i < numberOfSections; ++i) {
-          var section = getSection(i);
-          var zRange = section.getGlobalZRange();
-          var tool = section.getTool();
-          if (zRanges[tool.number]) {
-            zRanges[tool.number].expandToRange(zRange);
-          } else {
-            zRanges[tool.number] = zRange;
-          }
+    var zRanges = {};
+    if (is3D()) {
+      var numberOfSections = getNumberOfSections();
+      for (var i = 0; i < numberOfSections; ++i) {
+        var section = getSection(i);
+        var zRange = section.getGlobalZRange();
+        var tool = section.getTool();
+        if (zRanges[tool.number]) {
+          zRanges[tool.number].expandToRange(zRange);
+        } else {
+          zRanges[tool.number] = zRange;
         }
       }
-      var tools = getToolTable();
-      if (tools.getNumberOfTools() > 0) {
-        // First pass: collect components and compute column widths for alignment.
-        var rows = [];
-        var w = [0, 0, 0, 0]; // tStr, friendly|decimal, [decimal], typeName
-        for (var i = 0; i < tools.getNumberOfTools(); ++i) {
-          var tool = tools.getTool(i);
-          var c = getToolComponents(tool);
-          var col0 = c.tStr;
-          var col1 = c.friendly || "";
-          var col2 = "[" + c.decimal + "]";
-          var col3 = c.typeName;
-          var col4 = c.extras.join(" ");
-          var col5 = zRanges[tool.number] ? "ZMIN=" + xyzFormat.format(zRanges[tool.number].getMinimum()) : "";
-          rows.push([col0, col1, col2, col3, col4, col5]);
-          w[0] = Math.max(w[0], col0.length);
-          w[1] = Math.max(w[1], col1.length);
-          w[2] = Math.max(w[2], col2.length);
-          w[3] = Math.max(w[3], col3.length);
-        }
-        // Second pass: emit column-aligned comment lines.
-        for (var i = 0; i < rows.length; ++i) {
-          var r = rows[i];
-          var line = padRight(r[0], w[0]) + "  " + padRight(r[1], w[1]) + "  " + padRight(r[2], w[2]);
-          line += "  " + padRight(r[3], w[3]);
-          if (r[4]) { line += "  " + r[4]; }
-          if (r[5]) { line += "  " + r[5]; }
-          writeComment(line.replace(/ +$/, ""));
-        }
+    }
+    var tools = getToolTable();
+    if (tools.getNumberOfTools() > 0) {
+      // First pass: collect components and compute column widths for alignment.
+      var rows = [];
+      var w = [0, 0, 0, 0]; // tStr, friendly|decimal, [decimal], typeName
+      for (var i = 0; i < tools.getNumberOfTools(); ++i) {
+        var tool = tools.getTool(i);
+        var c = getToolComponents(tool);
+        var col0 = c.tStr;
+        var col1 = c.friendly || "";
+        var col2 = "[" + c.decimal + "]";
+        var col3 = c.typeName;
+        var col4 = c.extras.join(" ");
+        var col5 = zRanges[tool.number] ? "ZMIN=" + xyzFormat.format(zRanges[tool.number].getMinimum()) : "";
+        rows.push([col0, col1, col2, col3, col4, col5]);
+        w[0] = Math.max(w[0], col0.length);
+        w[1] = Math.max(w[1], col1.length);
+        w[2] = Math.max(w[2], col2.length);
+        w[3] = Math.max(w[3], col3.length);
+      }
+      // Second pass: emit column-aligned comment lines.
+      for (var i = 0; i < rows.length; ++i) {
+        var r = rows[i];
+        var line = padRight(r[0], w[0]) + "  " + padRight(r[1], w[1]) + "  " + padRight(r[2], w[2]);
+        line += "  " + padRight(r[3], w[3]);
+        if (r[4]) { line += "  " + r[4]; }
+        if (r[5]) { line += "  " + r[5]; }
+        writeComment(line.replace(/ +$/, ""));
       }
     }
   }
