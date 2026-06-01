@@ -587,6 +587,48 @@ var kOutput = createOutputVariable({prefix:"K", control:CONTROL_NONZERO}, xyzFor
 // cycle output
 var z71Output = createOutputVariable({prefix:"Z", control:CONTROL_FORCE}, xyzFormat);
 
+// CUSTOM: named G-codes. The post still emits these through the modal output
+// variables below (gMotionModal/gPlaneModal/gCycleModal/...), which already
+// suppress a code when the machine is already in that state - these names just
+// make the call sites read as intent instead of bare numbers. Standard codes are
+// named confidently; Okuma-specific cycle codes are noted in the comment.
+// (Machine-specific M-codes whose meaning is not yet confirmed - e.g. M53 on the
+// cycle lines - are intentionally left as raw numbers until their meaning is known.)
+var G = {
+  RAPID            : 0,   // G0   rapid traverse
+  LINEAR           : 1,   // G1   linear feed
+  CW               : 2,   // G2   circular interpolation CW
+  CCW              : 3,   // G3   circular interpolation CCW
+  COMP_CANCEL      : 40,  // G40  cutter compensation cancel
+  COMP_LEFT        : 41,  // G41  cutter compensation left
+  COMP_RIGHT       : 42,  // G42  cutter compensation right
+  PLANE_XY         : 17,  // G17
+  PLANE_ZX         : 18,  // G18
+  PLANE_YZ         : 19,  // G19
+  ABSOLUTE         : 90,  // G90  absolute positioning
+  INCREMENTAL      : 91,  // G91  incremental positioning
+  FEED_PER_MIN     : 94,  // G94  feed per minute
+  FEED_PER_REV     : 95,  // G95  feed per revolution
+  CYCLE_CLEARANCE  : 71,  // G71  Okuma canned-cycle Z clearance-plane preamble
+  CYCLE_CANCEL     : 80,  // G80  canned cycle cancel
+  CYCLE_DRILL      : 81,  // G81  drilling
+  CYCLE_COUNTERBORE: 82,  // G82  drilling with dwell
+  CYCLE_PECK       : 83,  // G83  peck drilling
+  CYCLE_CHIPBREAK  : 73,  // G73  high-speed peck drilling
+  CYCLE_TAP_LH     : 74,  // G74  left-hand / reverse tapping
+  CYCLE_TAP        : 84,  // G84  tapping
+  CYCLE_TAP_SYNC   : 284, // G284 Okuma synchronized tapping (useG284)
+  CYCLE_TAP_CHIP   : 282, // G282 Okuma synchronized chip-break tapping (RH)
+  CYCLE_TAP_CHIP_LH: 272, // G272 Okuma synchronized chip-break tapping (LH)
+  CYCLE_FINE_BORE  : 76,  // G76  fine boring
+  CYCLE_REAM       : 85,  // G85  reaming (feed out)
+  CYCLE_STOP_BORE  : 86,  // G86  boring, spindle stop at bottom
+  CYCLE_BACK_BORE  : 87,  // G87  back boring
+  CYCLE_BORE       : 89,  // G89  boring with dwell (feed out)
+  RETRACT_INITIAL  : 98,  // G98  return to initial level
+  RETRACT_RPLANE   : 99   // G99  return to R level
+};
+
 var gMotionModal = createOutputVariable({}, gFormat); // modal group 1 // G0-G3, ...
 var gPlaneModal = createOutputVariable({onchange:function () {gMotionModal.reset();}}, gFormat); // modal group 2 // G17-19
 var gAbsIncModal = createOutputVariable({}, gFormat); // modal group 3 // G90-91
@@ -1204,6 +1246,30 @@ function setSmoothing(mode) {
   smoothing.isDifferent = false;
 }
 
+// CUSTOM: write the per-section header - a blank separator line, the operation
+// comment (with a [n/total] suffix for patterned / multi-WCS instances), and, on
+// a tool change, the tool description and the formatted tool comment.
+function writeSectionHeader(insertToolCall) {
+  writeln("");
+  var opComment = getParameter("operation-comment", "");
+  var patternId = currentSection.getPatternId();
+  if (patternId !== 0) {
+    var group = wcsPatternIndex[String(patternId)];
+    if (group && group.length > 1) {
+      opComment += " [" + (group.indexOf(currentSection.getId()) + 1) + "/" + group.length + "]";
+    }
+  }
+  writeComment(opComment);
+  if (insertToolCall && currentSection.getTool()) {
+    var descParts = [];
+    if (tool.description) { descParts.push(tool.description); }
+    if (tool.vendor)      { descParts.push(tool.vendor); }
+    if (tool.productId)   { descParts.push(tool.productId); }
+    if (descParts.length > 0) { writeComment(descParts.join(" - ")); }
+    writeComment(getToolComment(tool));
+  }
+}
+
 function onSection() {
   var forceSectionRestart = optionalSection && !currentSection.isOptional();
   optionalSection = currentSection.isOptional();
@@ -1246,24 +1312,7 @@ function onSection() {
   // section uses, so Manual NC operations look visually identical in the output.
   executeManualNC();
 
-  writeln("");
-  var _opComment = getParameter("operation-comment", "");
-  var _opPid = currentSection.getPatternId();
-  if (_opPid !== 0) {
-    var _opGroup = wcsPatternIndex[String(_opPid)];
-    if (_opGroup && _opGroup.length > 1) {
-      _opComment += " [" + (_opGroup.indexOf(currentSection.getId()) + 1) + "/" + _opGroup.length + "]";
-    }
-  }
-  writeComment(_opComment);
-  if (insertToolCall && currentSection.getTool()) {
-    var descParts = [];
-    if (tool.description) { descParts.push(tool.description); }
-    if (tool.vendor)      { descParts.push(tool.vendor); }
-    if (tool.productId)   { descParts.push(tool.productId); }
-    if (descParts.length > 0) { writeComment(descParts.join(" - ")); }
-    writeComment(getToolComment(tool));
-  }
+  writeSectionHeader(insertToolCall);
 
   if (getProperty("showNotes") && hasParameter("notes")) {
     writeSectionNotes();
@@ -2679,7 +2728,7 @@ function onFeedMode(mode) {
 }
 
 function onCycle() {
-  writeBlock(gPlaneModal.format(17));
+  writeBlock(gPlaneModal.format(G.PLANE_XY));
   if (isProbeOperation()) {
     xOutput.setPrefix("PX=");
     yOutput.setPrefix("PY=");
@@ -2723,7 +2772,7 @@ function onCycleEnd() {
     if (!cycleExpanded) {
       gMotionModal.reset();
       zOutput.reset();
-      writeBlock(gMotionModal.format(0), zOutput.format(getCurrentPosition().z)); // avoid spindle stop
+      writeBlock(gMotionModal.format(G.RAPID), zOutput.format(getCurrentPosition().z)); // avoid spindle stop
       gCycleModal.reset();
     // writeBlock(gCycleModal.format(80)); // not good since it stops spindle
     }
@@ -2765,14 +2814,14 @@ function getCommonCycle(x, y, z, r, c) {
 // reduced to computing just those. `cycle` is the kernel-global cycle record.
 // retractMode 0 means "no retract-mode word" (conditional() collapses to "").
 function emitCanned(gCode, retractMode, g71, commonArgs, extraWords) {
-  writeBlock(gFormat.format(71), g71);
+  writeBlock(gFormat.format(G.CYCLE_CLEARANCE), g71);
   writeBlock(
-    gPlaneModal.format(17),
+    gPlaneModal.format(G.PLANE_XY),
     conditional(retractMode != 0, gRetractModal.format(retractMode)),
     gCycleModal.format(gCode),
     commonArgs,
     extraWords,
-    mFormat.format(53)
+    mFormat.format(53) // M53: Okuma-specific, meaning unconfirmed - left as a raw code for now
   );
 }
 
@@ -2789,13 +2838,8 @@ function writeDrillCycle(cycle, x, y, z) {
     // Fusion may convert the feed to per-min (feedMode then reports per-min) even when the operator checked
     // "feed per revolution" - but the operation's own setting survives as the tool_useFeedPerRevolution
     // parameter. Tapping cycles derive F from thread pitch, so treating them as per-rev is always safe.
-    // CUSTOM: feed per rev - emit G95 when the operation uses per-rev feeds; feedrate arrives in native units.
-    // currentSection.feedMode reflects the setting when Fusion honors FPR for the cycle type. For TAPPING,
-    // Fusion may convert the feed to per-min (feedMode then reports per-min) even when the operator checked
-    // "feed per revolution" - but the operation's own setting survives as the tool_useFeedPerRevolution
-    // parameter. Tapping cycles derive F from thread pitch, so treating them as per-rev is always safe.
     var _perRev = (currentSection.feedMode == FEED_PER_REVOLUTION);
-    writeBlock(gFeedModeModal.format(_perRev ? 95 : 94));
+    writeBlock(gFeedModeModal.format(_perRev ? G.FEED_PER_REV : G.FEED_PER_MIN));
     // Native vs. RPM-scaled feed: per-rev feeds pass through, per-min feeds scale with the capped spindle.
     function scaleFeed(rate) { return _perRev ? rate : rate * spindleSpeedScale; }
     // Dwell as a "P<ms>" word, or "" when there is no dwell.
@@ -2812,24 +2856,24 @@ function writeDrillCycle(cycle, x, y, z) {
     var g71 = z71Output.format(cycle.clearance);
     switch (cycleType) {
     case "drilling":
-      emitCanned(81, 0, g71, cc(), [feedOutput.format(F)]);
+      emitCanned(G.CYCLE_DRILL, 0, g71, cc(), [feedOutput.format(F)]);
       break;
     case "counter-boring":
-      emitCanned(82, 0, g71, cc(), [pWordMs(), feedOutput.format(F)]);
+      emitCanned(G.CYCLE_COUNTERBORE, 0, g71, cc(), [pWordMs(), feedOutput.format(F)]);
       break;
     case "chip-breaking":
       if (cycle.accumulatedDepth < cycle.depth) {
-        emitCanned(83, 0, g71, cc(), [pWordMs(),
+        emitCanned(G.CYCLE_PECK, 0, g71, cc(), [pWordMs(),
           "I" + xyzFormat.format(cycle.incrementalDepth),
           "J" + xyzFormat.format(cycle.accumulatedDepth),
           feedOutput.format(F)]);
       } else {
-        emitCanned(73, 0, g71, cc(), ["Q" + xyzFormat.format(cycle.incrementalDepth),
+        emitCanned(G.CYCLE_CHIPBREAK, 0, g71, cc(), ["Q" + xyzFormat.format(cycle.incrementalDepth),
           pWordMs(), feedOutput.format(F)]);
       }
       break;
     case "deep-drilling":
-      emitCanned(83, 0, g71, cc(), ["Q" + xyzFormat.format(cycle.incrementalDepth),
+      emitCanned(G.CYCLE_PECK, 0, g71, cc(), ["Q" + xyzFormat.format(cycle.incrementalDepth),
         pWordMs(), feedOutput.format(F)]);
       break;
     case "tapping":
@@ -2837,14 +2881,14 @@ function writeDrillCycle(cycle, x, y, z) {
     case "right-tapping":
       // Hand + useG284 pick the G-code: LH always G74; RH G284 or G84 per property.
       if (!F) { F = tool.getTappingFeedrate(); }
-      emitCanned((tool.type == TOOL_TAP_LEFT_HAND) ? 74 : (getProperty("useG284") ? 284 : 84),
+      emitCanned((tool.type == TOOL_TAP_LEFT_HAND) ? G.CYCLE_TAP_LH : (getProperty("useG284") ? G.CYCLE_TAP_SYNC : G.CYCLE_TAP),
         0, g71, cc(), [feedOutput.format(F)]);
       break;
     case "tapping-with-chip-breaking":
     case "left-tapping-with-chip-breaking":
     case "right-tapping-with-chip-breaking":
       if (!F) { F = tool.getTappingFeedrate(); }
-      emitCanned((tool.type == TOOL_TAP_LEFT_HAND ? 272 : 282), 0, g71, cc(), [
+      emitCanned((tool.type == TOOL_TAP_LEFT_HAND ? G.CYCLE_TAP_CHIP_LH : G.CYCLE_TAP_CHIP), 0, g71, cc(), [
         conditional(P > 0, "P" + secFormat.format(P / 1000.0)),
         // Q takes priority over I/J, so only use Q for plain pecking; switch to I + J when an accumulated depth is in effect
         conditional(cycle.accumulatedDepth >= cycle.depth, "Q" + xyzFormat.format(cycle.incrementalDepth)), // cutting depth per peck
@@ -2859,30 +2903,30 @@ function writeDrillCycle(cycle, x, y, z) {
       break;
     case "fine-boring":
       // TAG: use I/J for shift
-      emitCanned(76, 0, g71, cc(), ["Q" + xyzFormat.format(cycle.shift), pWordMs(), feedOutput.format(F)]);
+      emitCanned(G.CYCLE_FINE_BORE, 0, g71, cc(), ["Q" + xyzFormat.format(cycle.shift), pWordMs(), feedOutput.format(F)]);
       break;
     case "back-boring":
       // TAG: use I/J for shift
-      var dx = (gPlaneModal.getCurrent() == 19) ? cycle.backBoreDistance : 0;
-      var dy = (gPlaneModal.getCurrent() == 18) ? cycle.backBoreDistance : 0;
-      var dz = (gPlaneModal.getCurrent() == 17) ? cycle.backBoreDistance : 0;
-      emitCanned(87, 98, g71, getCommonCycle(x - dx, y - dy, z - dz, cycle.bottom, cycle.clearance),
+      var dx = (gPlaneModal.getCurrent() == G.PLANE_YZ) ? cycle.backBoreDistance : 0;
+      var dy = (gPlaneModal.getCurrent() == G.PLANE_ZX) ? cycle.backBoreDistance : 0;
+      var dz = (gPlaneModal.getCurrent() == G.PLANE_XY) ? cycle.backBoreDistance : 0;
+      emitCanned(G.CYCLE_BACK_BORE, G.RETRACT_INITIAL, g71, getCommonCycle(x - dx, y - dy, z - dz, cycle.bottom, cycle.clearance),
         ["Q" + xyzFormat.format(cycle.shift), pWordMs(), feedOutput.format(F)]);
       break;
     case "reaming":
       var FA = scaleFeed(cycle.retractFeedrate);
-      emitCanned(85, 0, g71, cc(), [pWordMs(), feedOutput.format(F),
+      emitCanned(G.CYCLE_REAM, 0, g71, cc(), [pWordMs(), feedOutput.format(F),
         conditional(FA != F, "FA=" + feedFormat.format(FA))]);
       break;
     case "stop-boring":
-      emitCanned(86, 0, g71, cc(), [pWordMs(), feedOutput.format(F)]);
+      emitCanned(G.CYCLE_STOP_BORE, 0, g71, cc(), [pWordMs(), feedOutput.format(F)]);
       if (getProperty("dwellAfterStop") > 0) {
         onDwell(getProperty("dwellAfterStop")); // make sure spindle reaches full spindle speed
       }
       break;
     case "boring":
       var FA = scaleFeed(cycle.retractFeedrate);
-      emitCanned(89, 0, g71, cc(), [pWordMs(), feedOutput.format(F),
+      emitCanned(G.CYCLE_BORE, 0, g71, cc(), [pWordMs(), feedOutput.format(F),
         conditional(FA != F, "FA=" + feedFormat.format(FA))]);
       break;
     default:
@@ -2903,13 +2947,13 @@ function writeDrillCycle(cycle, x, y, z) {
           !xyzFormat.areDifferent(y, yOutput.getCurrent()) &&
           !xyzFormat.areDifferent(z, zOutput.getCurrent())) {
         switch (gPlaneModal.getCurrent()) {
-        case 17: // XY
+        case G.PLANE_XY:
           xOutput.reset(); // at least one axis is required
           break;
-        case 18: // ZX
+        case G.PLANE_ZX:
           zOutput.reset(); // at least one axis is required
           break;
-        case 19: // YZ
+        case G.PLANE_YZ:
           yOutput.reset(); // at least one axis is required
           break;
         }
