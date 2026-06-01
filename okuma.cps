@@ -607,10 +607,17 @@ var G = {
   PLANE_YZ         : 19,  // G19
   ABSOLUTE         : 90,  // G90  absolute positioning
   INCREMENTAL      : 91,  // G91  incremental positioning
+  FEED_INVERSE_TIME: 93,  // G93  inverse-time feed
   FEED_PER_MIN     : 94,  // G94  feed per minute
   FEED_PER_REV     : 95,  // G95  feed per revolution
   UNIT_INCH        : 20,  // G20  inch
   UNIT_MM          : 21,  // G21  millimeter
+  DWELL            : 4,   // G4   dwell
+  WCS_SELECT       : 15,  // G15  work-coordinate-system select (G15 H<n>)
+  SMOOTHING_ON     : 131, // G131 High-Cut / superNURBS smoothing on
+  SMOOTHING_OFF    : 130, // G130 High-Cut smoothing off
+  TPOC_ON          : 445, // G445 Tool Posture Offset Control on
+  TPOC_OFF         : 444, // G444 Tool Posture Offset Control off
   CYCLE_CLEARANCE  : 71,  // G71  Okuma canned-cycle Z clearance-plane preamble
   CYCLE_CANCEL     : 80,  // G80  canned cycle cancel
   CYCLE_DRILL      : 81,  // G81  drilling
@@ -1061,7 +1068,7 @@ function writeEnsureStartPallet(label) {
   var expr = getStartPalletExpr();
   writeComment("ENSURE PALLET " + expr + " IS LOADED");
   writeBlock("IF [VPLTK EQ " + expr + "] N" + label);
-  writeBlock(mFormat.format(60), "(PALLET CHANGE)");
+  writeBlock(mFormat.format(M.PALLET_CHANGE), "(PALLET CHANGE)");
   writeBlock("N" + label);
 }
 
@@ -1263,13 +1270,13 @@ function setSmoothing(mode) {
         "I2",
         "L" + xyzFormat.format(toPreciseUnit(19, MM)),
         "R" + xyzFormat.format(toPreciseUnit(0.002, MM)));
-    writeBlock(gFormat.format(131),
+    writeBlock(gFormat.format(G.SMOOTHING_ON),
       "F" + feedFormat.format(currentSection.getMaximumFeedrate()),
       "J" + xyzFormat.format(smoothing.level),
       smoothingCodes
     );
   } else { // disable smoothing
-    writeBlock(gFormat.format(130));
+    writeBlock(gFormat.format(G.SMOOTHING_OFF));
   }
   smoothing.isActive = mode;
   smoothing.force = false;
@@ -1361,7 +1368,7 @@ function onSection() {
   }
   // Output modal commands here
   sectionFeedMode = FEED_PER_MINUTE; // CUSTOM: feed per rev - reset to default; onFeedMode() will switch to G95 if Fusion sends per-rev feeds for this section
-  writeBlock(gPlaneModal.format(17), gAbsIncModal.format(90), gFeedModeModal.format(94));
+  writeBlock(gPlaneModal.format(G.PLANE_XY), gAbsIncModal.format(G.ABSOLUTE), gFeedModeModal.format(G.FEED_PER_MIN));
 
   // wcs
   if (insertToolCall) { // force work offset when changing tool
@@ -1384,7 +1391,7 @@ function onSection() {
   setCoolant(tool.coolant);
 
   if (getProperty("useChipConveyor") && isFirstSection()) {
-    writeBlock(mFormat.format(279));
+    writeBlock(mFormat.format(M.CHIP_CONVEYOR_ON));
   }
   if (tcp.isSupportedByOperation) {
     setCAS(false);
@@ -1397,7 +1404,7 @@ function onSection() {
   // enable Tool Posture Offset Control
   if (getProperty("useTPOC") && tcp.isSupportedByOperation) {
     writeBlock(
-      gFormat.format(445),
+      gFormat.format(G.TPOC_ON),
       conditional(machineConfiguration.isMachineCoordinate(0), "A" + abcFormat.format(toRad(0.2))),
       conditional(machineConfiguration.isMachineCoordinate(1), "B" + abcFormat.format(toRad(0.2))),
       conditional(machineConfiguration.isMachineCoordinate(2), "C" + abcFormat.format(toRad(0.2))),
@@ -2387,13 +2394,13 @@ function writeFixtureOffset(abc, reset) {
     );
     var wcs = abc.isZero() ? currentSection.workOffset : fixtureOffsetWCS
     // CUSTOM: only the part work offset is tokenized; the reserved fixtureOffsetWCS stays literal.
-    writeBlock(gFormat.format(15), (wcs == fixtureOffsetWCS ? hFormat.format(wcs) : wcsH(wcs)), "(Temp WCS# " + wcs + ")");
+    writeBlock(gFormat.format(G.WCS_SELECT), (wcs == fixtureOffsetWCS ? hFormat.format(wcs) : wcsH(wcs)), "(Temp WCS# " + wcs + ")");
     break;
   case "G605":
     if (abc.isZero()) {
       if (state.twpIsActive) {
         writeBlock(gRotationModal.format(604));
-        writeBlock(gFormat.format(15), wcsH(currentSection.workOffset)); // CUSTOM: tokenized for pallet increment
+        writeBlock(gFormat.format(G.WCS_SELECT), wcsH(currentSection.workOffset)); // CUSTOM: tokenized for pallet increment
       }
     } else {
       gRotationModal.reset();
@@ -2422,13 +2429,13 @@ function setSpindleLoadMonitor(enable, insertToolCall) {
   if (enable) { // enable spindle load monitoring
     if (insertToolCall || forceSpindleSpeed || isSpindleSpeedDifferent()) {
       if (loadMonitorVal > 0 && tool.type != TOOL_PROBE) {
-        writeBlock(mFormat.format(143), "VSLNO=1");
+        writeBlock(mFormat.format(M.LOAD_MONITOR_ON), "VSLNO=1");
         writeBlock(loadMonitorOutput.format(loadMonitorVal));
       }
     }
   } else { // disable spindle load monitoring
     if (loadMonitorOutput.getCurrent() != 0) {
-      writeBlock(mFormat.format(142));
+      writeBlock(mFormat.format(M.LOAD_MONITOR_OFF));
     }
   }
 }
@@ -2460,7 +2467,7 @@ function writeInitialPositioning(position, isRequired, codes1, codes2) {
 
   forceModals(gMotionModal);
   writeStartBlocks(isRequired, function() {
-    var modalCodes = formatWords(gAbsIncModal.format(90), gPlaneModal.format(17));
+    var modalCodes = formatWords(gAbsIncModal.format(G.ABSOLUTE), gPlaneModal.format(G.PLANE_XY));
     if (typeof disableLengthCompensation == "function") {
       disableLengthCompensation(!isRequired); // cancel tool length compensation prior to enabling it, required when switching G43/G43.4 modes
     }
@@ -2533,7 +2540,7 @@ function writeInitialPositioning(position, isRequired, codes1, codes2) {
 
   validate(!validateLengthCompensation || state.lengthCompensationActive, "Tool length compensation is not active."); // make sure that lenght compensation is enabled
   if (!isRequired) { // simple positioning
-    var modalCodes = formatWords(gAbsIncModal.format(90), gPlaneModal.format(17));
+    var modalCodes = formatWords(gAbsIncModal.format(G.ABSOLUTE), gPlaneModal.format(G.PLANE_XY));
     forceXYZ();
     if (!state.retractedZ && xyzFormat.getResultingValue(getCurrentPosition().z) < xyzFormat.getResultingValue(position.z)) {
       writeBlock(modalCodes, gMotionModal.format(motionCode.single), zOutput.format(position.z), feed);
@@ -2725,7 +2732,7 @@ function onDwell(seconds) {
   }
   seconds = clamp(0.001, seconds, maxValue);
   // unit is set in the machine
-  writeBlock(gFormat.format(4), "F" + secFormat.format(seconds));
+  writeBlock(gFormat.format(G.DWELL), "F" + secFormat.format(seconds));
 }
 
 // Returns the RPM capped to the effective maximum (pure, no side effects).
@@ -3082,7 +3089,7 @@ function writeProbeCycle(cycle, x, y, z) {
   // offset word is always appended. writeBlock flattens the argument arrays.
   function renishaw9901(zRapid, midArgs) {
     gMotionModal.reset();
-    writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(zRapid));
+    writeBlock(gMotionModal.format(G.RAPID), "Z" + xyzFormat.format(zRapid));
     writeBlock([macroCall + 9901].concat(midArgs).concat(["PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)]));
   }
 
@@ -3474,7 +3481,7 @@ function setProbeAngle() {
       gRotationModal.reset();
       gAbsIncModal.reset();
       writeBlock(
-        gPlaneModal.format(17), gAbsIncModal.format(90), gRotationModal.format(11),
+        gPlaneModal.format(G.PLANE_XY), gAbsIncModal.format(G.ABSOLUTE), gRotationModal.format(11),
         probeVariables.compensationXY, "P=VS84"
       );
       validateWorkOffset = true;
@@ -3516,19 +3523,19 @@ function onLinear(_x, _y, _z, feed) {
   if (x || y || z) {
     if (pendingRadiusCompensation >= 0) {
       pendingRadiusCompensation = -1;
-      writeBlock(gPlaneModal.format(17));
+      writeBlock(gPlaneModal.format(G.PLANE_XY));
       switch (radiusCompensation) {
       case RADIUS_COMPENSATION_LEFT:
-        writeBlock(gMotionModal.format(1), gFormat.format(41), x, y, z, getToolOffsetCode("diameter"), getFeed(feed));
+        writeBlock(gMotionModal.format(G.LINEAR), gFormat.format(G.COMP_LEFT), x, y, z, getToolOffsetCode("diameter"), getFeed(feed));
         break;
       case RADIUS_COMPENSATION_RIGHT:
-        writeBlock(gMotionModal.format(1), gFormat.format(42), x, y, z, getToolOffsetCode("diameter"), getFeed(feed));
+        writeBlock(gMotionModal.format(G.LINEAR), gFormat.format(G.COMP_RIGHT), x, y, z, getToolOffsetCode("diameter"), getFeed(feed));
         break;
       default:
-        writeBlock(gMotionModal.format(1), gFormat.format(40), x, y, z, getFeed(feed));
+        writeBlock(gMotionModal.format(G.LINEAR), gFormat.format(G.COMP_CANCEL), x, y, z, getFeed(feed));
       }
     } else {
-      writeBlock(gMotionModal.format(1), x, y, z, getFeed(feed));
+      writeBlock(gMotionModal.format(G.LINEAR), x, y, z, getFeed(feed));
     }
   }
 }
@@ -3549,7 +3556,7 @@ function onRapid5D(_x, _y, _z, _a, _b, _c) {
   var c = cOutput.format(_c);
   var m = getRotaryDirectionCode(new Vector(_a, _b, _c));
   if (x || y || z || a || b || c) {
-    writeBlock(gMotionModal.format(0), x, y, z, a, b, c, m);
+    writeBlock(gMotionModal.format(G.RAPID), x, y, z, a, b, c, m);
     forceFeed();
   }
 }
@@ -3582,16 +3589,16 @@ function onLinear5D(_x, _y, _z, _a, _b, _c, feed, feedMode) {
     forceFeed();
   }
   var f = feedMode == FEED_INVERSE_TIME ? inverseTimeOutput.format(feed) : getFeed(feed);
-  var fMode = feedMode == FEED_INVERSE_TIME ? 93 : 94;
+  var fMode = feedMode == FEED_INVERSE_TIME ? G.FEED_INVERSE_TIME : G.FEED_PER_MIN;
 
   var m = getRotaryDirectionCode(new Vector(_a, _b, _c));
   if (x || y || z || a || b || c) {
-    writeBlock(gFeedModeModal.format(fMode), gMotionModal.format(1), x, y, z, a, b, c, f, m);
+    writeBlock(gFeedModeModal.format(fMode), gMotionModal.format(G.LINEAR), x, y, z, a, b, c, f, m);
   } else if (f) {
     if (getNextRecord().isMotion()) { // try not to output feed without motion
       forceFeed(); // force feed on next line
     } else {
-      writeBlock(gFeedModeModal.format(fMode), gMotionModal.format(1), f);
+      writeBlock(gFeedModeModal.format(fMode), gMotionModal.format(G.LINEAR), f);
     }
   }
 }
@@ -3607,13 +3614,13 @@ function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
     }
     switch (getCircularPlane()) {
     case PLANE_XY:
-      writeBlock(gPlaneModal.format(17), gMotionModal.format(clockwise ? 2 : 3), iOutput.format(circularOffset.x), jOutput.format(circularOffset.y), getFeed(feed));
+      writeBlock(gPlaneModal.format(G.PLANE_XY), gMotionModal.format(clockwise ? G.CW : G.CCW), iOutput.format(circularOffset.x), jOutput.format(circularOffset.y), getFeed(feed));
       break;
     case PLANE_ZX:
-      writeBlock(gPlaneModal.format(18), gMotionModal.format(clockwise ? 2 : 3), iOutput.format(circularOffset.x), kOutput.format(circularOffset.z), getFeed(feed));
+      writeBlock(gPlaneModal.format(G.PLANE_ZX), gMotionModal.format(clockwise ? G.CW : G.CCW), iOutput.format(circularOffset.x), kOutput.format(circularOffset.z), getFeed(feed));
       break;
     case PLANE_YZ:
-      writeBlock(gPlaneModal.format(19), gMotionModal.format(clockwise ? 2 : 3), jOutput.format(circularOffset.y), kOutput.format(circularOffset.z), getFeed(feed));
+      writeBlock(gPlaneModal.format(G.PLANE_YZ), gMotionModal.format(clockwise ? G.CW : G.CCW), jOutput.format(circularOffset.y), kOutput.format(circularOffset.z), getFeed(feed));
       break;
     default:
       linearize(tolerance);
@@ -3624,19 +3631,19 @@ function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
     switch (getCircularPlane()) {
     case PLANE_XY:
       writeBlock(
-        gPlaneModal.format(17), gMotionModal.format(clockwise ? 2 : 3),
+        gPlaneModal.format(G.PLANE_XY), gMotionModal.format(clockwise ? G.CW : G.CCW),
         xOutput.format(x), yOutput.format(y), zOutput.format(z),
         iOutput.format(circularOffset.x), jOutput.format(circularOffset.y), getFeed(feed));
       break;
     case PLANE_ZX:
       writeBlock(
-        gPlaneModal.format(18), gMotionModal.format(clockwise ? 2 : 3),
+        gPlaneModal.format(G.PLANE_ZX), gMotionModal.format(clockwise ? G.CW : G.CCW),
         xOutput.format(x), yOutput.format(y), zOutput.format(z),
         iOutput.format(circularOffset.x), kOutput.format(circularOffset.z), getFeed(feed));
       break;
     case PLANE_YZ:
       writeBlock(
-        gPlaneModal.format(19), gMotionModal.format(clockwise ? 2 : 3),
+        gPlaneModal.format(G.PLANE_YZ), gMotionModal.format(clockwise ? G.CW : G.CCW),
         xOutput.format(x), yOutput.format(y), zOutput.format(z),
         jOutput.format(circularOffset.y), kOutput.format(circularOffset.z), getFeed(feed));
       break;
@@ -3782,7 +3789,7 @@ function onSectionEnd() {
     }
   }
   if (tcp.isSupportedByOperation) {
-    writeBlock(conditional(getProperty("useTPOC"), gFormat.format(444)));
+    writeBlock(conditional(getProperty("useTPOC"), gFormat.format(G.TPOC_OFF)));
   }
   loadMonitorVal = getProperty("loadMonitorVal");
 
@@ -3817,11 +3824,11 @@ function writeRetract() {
         if (retract.retractAxes[2]) { // substitute Z-position with Z=VPSLZ when G16 retract method is used
           words = "Z=VPSLZ";
         }
-        writeBlock(gFormat.format(16), hFormat.format(0), gMotionModal.format(0), words);
+        writeBlock(gFormat.format(16), hFormat.format(0), gMotionModal.format(G.RAPID), words); // G16: machine home/limit retract (safePositionMethod "G16"); left raw, meaning unconfirmed
         break;
       case "G0":
         gMotionModal.reset();
-        writeBlock(gAbsIncModal.format(90), gMotionModal.format(0), words);
+        writeBlock(gAbsIncModal.format(G.ABSOLUTE), gMotionModal.format(G.RAPID), words);
         break;
       default:
         error(subst(localize("Unsupported safe position method '%1'"), retract.method));
@@ -3867,7 +3874,7 @@ function writePerPalletEnd() {
 
   // CUSTOM: optional G30 P<n> return to secondary reference point at program end.
   if (getProperty("gotoSecondaryHomeAtEnd")) {
-    writeBlock(gFormat.format(30), "P" + getProperty("secondaryHomePositionNumber"));
+    writeBlock(gFormat.format(G.HOME_SECONDARY), "P" + getProperty("secondaryHomePositionNumber"));
   }
 }
 
@@ -3883,7 +3890,7 @@ function writeProgramTail() {
     inspectionProcessSectionEnd();
   }
   if (getProperty("useChipConveyor")) {
-    writeBlock(mFormat.format(278));
+    writeBlock(mFormat.format(M.CHIP_CONVEYOR_OFF));
   }
   // Process Manual NC commands
   executeManualNC();
@@ -3932,7 +3939,7 @@ function onClose() {
       }
       writeComment("PALLET COPY " + (p + 1) + " OF 2");
       write(substitutePalletWcs(body, p * increment));
-      writeBlock(mFormat.format(60), "(PALLET CHANGE)"); // swap to the next pallet
+      writeBlock(mFormat.format(M.PALLET_CHANGE), "(PALLET CHANGE)"); // swap to the next pallet
     }
     // After the second M60 the starting pallet is back in the machine, so jump to
     // the label planted right after the start-pallet check in onOpen.
@@ -3942,7 +3949,7 @@ function onClose() {
     writePerPalletEnd();
     if (palletMode == "single") {
       // Shuffle the finished pallet out of the machine for unload.
-      writeBlock(mFormat.format(60), "(PALLET CHANGE)");
+      writeBlock(mFormat.format(M.PALLET_CHANGE), "(PALLET CHANGE)");
     }
     writeProgramTail();
   }
@@ -4921,7 +4928,7 @@ function positionABC(abc, force) {
     }
     onCommand(COMMAND_UNLOCK_MULTI_AXIS);
     gMotionModal.reset();
-    writeBlock(gMotionModal.format(0), a, b, c);
+    writeBlock(gMotionModal.format(G.RAPID), a, b, c);
     setCurrentABC(abc); // required for machine simulation
     machineSimulation({a:abc.x, b:abc.y, c:abc.z, coordinates:MACHINE});
   }
@@ -4941,7 +4948,7 @@ function writeWCS(section, wcsIsRequired) {
       // sentinel formatter so the per-pallet replay can increment the WCS number;
       // otherwise emit the kernel-formatted section.wcs unchanged.
       if (palletCapturing) {
-        writeBlock(gFormat.format(15), wcsH(section.workOffset), "(WCS# " + section.workOffset + ")");
+        writeBlock(gFormat.format(G.WCS_SELECT), wcsH(section.workOffset), "(WCS# " + section.workOffset + ")");
       } else {
         writeBlock(section.wcs, "(WCS# " + section.workOffset + ")");
       }
@@ -5771,10 +5778,10 @@ function subprogramDefine(_initialPosition, _abc) {
         validate(!validateLengthCompensation || state.lengthCompensationActive, "Tool length compensation is not active."); // make sure that length compensation is enabled
         var block = "";
         if (typeof gAbsIncModal != "undefined") {
-          block += gAbsIncModal.format(90);
+          block += gAbsIncModal.format(G.ABSOLUTE);
         }
         if (typeof gPlaneModal != "undefined") {
-          block += gPlaneModal.format(17);
+          block += gPlaneModal.format(G.PLANE_XY);
         }
         writeBlock(block);
         zOutput.reset();
@@ -5990,7 +5997,7 @@ function onRapid(_x, _y, _z) {
       error(localize("Radius compensation mode cannot be changed at rapid traversal."));
       return;
     }
-    writeBlock(gMotionModal.format(0), x, y, z);
+    writeBlock(gMotionModal.format(G.RAPID), x, y, z);
     forceFeed();
   }
 }
