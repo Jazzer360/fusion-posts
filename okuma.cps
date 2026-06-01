@@ -1407,6 +1407,23 @@ function padRight(s, n) {
   return s;
 }
 
+// CUSTOM: tool-type predicates shared by getToolComponents. Each underlying list
+// was previously spelled out twice; the two flute/DOC milling lists differ only by
+// TOOL_MILLING_THREAD and the two drill lists only by TOOL_COUNTER_SINK, so the
+// shared core lives here and the differing member is added explicitly at each site.
+function isDrillFamily(t) {
+  return t == TOOL_DRILL || t == TOOL_DRILL_CENTER || t == TOOL_DRILL_SPOT ||
+         t == TOOL_BORING_BAR || t == TOOL_COUNTER_BORE || t == TOOL_REAMER;
+}
+function isMillingFluteType(t) {
+  return t == TOOL_MILLING_END_FLAT   || t == TOOL_MILLING_END_BALL  ||
+         t == TOOL_MILLING_END_BULLNOSE || t == TOOL_MILLING_FACE    ||
+         t == TOOL_MILLING_SLOT        || t == TOOL_MILLING_RADIUS   ||
+         t == TOOL_MILLING_CHAMFER     || t == TOOL_MILLING_DOVETAIL ||
+         t == TOOL_MILLING_TAPERED     || t == TOOL_MILLING_LOLLIPOP ||
+         t == TOOL_MILLING_FORM;
+}
+
 // Returns a structured object with all displayable tool attributes split into fields.
 // Used by both getToolComment (flowing per-section comment) and the aligned header tool list.
 function getToolComponents(tool) {
@@ -1414,8 +1431,7 @@ function getToolComponents(tool) {
 
   // Friendly size name lookup
   var friendly = null;
-  if (t == TOOL_DRILL || t == TOOL_DRILL_CENTER || t == TOOL_DRILL_SPOT ||
-      t == TOOL_BORING_BAR || t == TOOL_COUNTER_BORE || t == TOOL_REAMER) {
+  if (isDrillFamily(t)) {
     friendly = getFriendlySize(sizeTables.drill, tool.diameter);
   } else if (t == TOOL_TAP_RIGHT_HAND || t == TOOL_TAP_LEFT_HAND) {
     friendly = getFriendlyTapSize(sizeTables.tap, tool.diameter, tool.getThreadPitch());
@@ -1453,12 +1469,7 @@ function getToolComponents(tool) {
     extras.push("CR=" + formatSizeDecimal(tool.cornerRadius));
   }
 
-  if (t == TOOL_MILLING_END_FLAT   || t == TOOL_MILLING_END_BALL  ||
-      t == TOOL_MILLING_END_BULLNOSE || t == TOOL_MILLING_FACE    ||
-      t == TOOL_MILLING_SLOT        || t == TOOL_MILLING_RADIUS   ||
-      t == TOOL_MILLING_CHAMFER     || t == TOOL_MILLING_DOVETAIL ||
-      t == TOOL_MILLING_TAPERED     || t == TOOL_MILLING_LOLLIPOP ||
-      t == TOOL_MILLING_FORM) {
+  if (isMillingFluteType(t)) {
     if (tool.numberOfFlutes > 0) { extras.push(tool.numberOfFlutes + "FL"); }
   }
 
@@ -1471,16 +1482,9 @@ function getToolComponents(tool) {
   }
 
   if (tool.fluteLength > 0) {
-    if (t == TOOL_MILLING_END_FLAT   || t == TOOL_MILLING_END_BALL  ||
-        t == TOOL_MILLING_END_BULLNOSE || t == TOOL_MILLING_FACE    ||
-        t == TOOL_MILLING_SLOT        || t == TOOL_MILLING_RADIUS   ||
-        t == TOOL_MILLING_CHAMFER     || t == TOOL_MILLING_DOVETAIL ||
-        t == TOOL_MILLING_TAPERED     || t == TOOL_MILLING_LOLLIPOP ||
-        t == TOOL_MILLING_THREAD      || t == TOOL_MILLING_FORM) {
+    if (isMillingFluteType(t) || t == TOOL_MILLING_THREAD) {
       extras.push("DOC=" + formatSizeDecimal(tool.fluteLength));
-    } else if (t == TOOL_DRILL        || t == TOOL_DRILL_CENTER   || t == TOOL_DRILL_SPOT ||
-               t == TOOL_COUNTER_SINK || t == TOOL_COUNTER_BORE   || t == TOOL_REAMER    ||
-               t == TOOL_BORING_BAR) {
+    } else if (isDrillFamily(t) || t == TOOL_COUNTER_SINK) {
       extras.push("FL=" + formatSizeDecimal(tool.fluteLength));
     }
   }
@@ -2729,9 +2733,15 @@ function onCycleEnd() {
   }
 }
 
+// CUSTOM: a drilling cycle running in polar (radial) mode on a multi-axis section.
+// Used to decide whether cycle points must be expanded through getPolarPosition().
+function isPolarMultiAxis() {
+  return (currentSection.getPolarMode && currentSection.getPolarMode() != POLAR_MODE_OFF) && currentSection.isMultiAxis();
+}
+
 function getCommonCycle(x, y, z, r, c) {
   forceXYZ(); // force xyz on first drill hole of any cycle
-  if ((currentSection.getPolarMode && currentSection.getPolarMode() != POLAR_MODE_OFF) && currentSection.isMultiAxis()) {
+  if (isPolarMultiAxis()) {
     var polarPosition = getPolarPosition(x, y, z);
     return [xOutput.format(polarPosition.first.x), yOutput.format(polarPosition.first.y), zOutput.format(polarPosition.first.z),
       aOutput.format(polarPosition.second.x), bOutput.format(polarPosition.second.y), cOutput.format(polarPosition.second.z),
@@ -2910,7 +2920,7 @@ function writeDrillCycle(cycle, x, y, z) {
       if (subprogramsAreSupported() && subprogramState.incrementalMode) { // set current position to retract height
         setCyclePosition(cycle.retract);
       }
-      if ((currentSection.getPolarMode && currentSection.getPolarMode() != POLAR_MODE_OFF) && currentSection.isMultiAxis()) {
+      if (isPolarMultiAxis()) {
         var polarPosition = getPolarPosition(x, y, z);
         setCurrentPositionAndDirection(polarPosition);
         writeBlock(xOutput.format(polarPosition.first.x), yOutput.format(polarPosition.first.y), zOutput.format(polarPosition.first.z),
