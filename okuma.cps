@@ -3661,6 +3661,11 @@ function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
   }
 }
 
+// Fallback command->M-code dispatch table for onCommand: commands without an
+// explicit case are looked up here by their string id via the dynamic access
+// `mapCommand[getCommandStringId(command)]` (see onCommand). That computed lookup
+// is why "Find References" reports no uses - it is load-bearing (e.g. COMMAND_END
+// -> M02 ends every program). Do not remove.
 var mapCommand = {
   COMMAND_END                     : M.END,
   COMMAND_SPINDLE_CLOCKWISE       : M.SPINDLE_CW,
