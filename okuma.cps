@@ -48,7 +48,7 @@ allowedCircularPlanes = 1 << PLANE_XY; // allow XY plane only
 
 highFeedMapping = HIGH_FEED_NO_MAPPING; // must be set if axes are not synchronized
 highFeedrate = (unit == MM) ? 5000 : 200;
-allowFeedPerRevolutionDrilling = true; // CUSTOM: feed per rev - pass drilling cycle feeds in native per-rev units; Fusion stops pre-converting them and stops issuing the "Post does not support feed per revolution" warning; set to "FPRAll" if tapping cycles also need native per-rev feeds
+allowFeedPerRevolutionDrilling = FPRAll;
 probeMultipleFeatures = true;
 
 // CUSTOM: post property groups with display titles, descriptions, and ordering.
@@ -187,7 +187,7 @@ properties = {
     type       : "integer",
     value      : 5,
     range      : [1, 9],
-    scope      : "post"
+    scope      : ["post", "machine"]
   },
 
   // ---- Tool & Spindle ----
@@ -2758,8 +2758,12 @@ function writeDrillCycle(cycle, x, y, z) {
   if (isFirstCyclePoint()) {
     // return to initial Z which is clearance plane and set absolute mode
     repositionToCycleClearance(cycle, x, y, z);
-    // CUSTOM: feed per rev - emit G95 when the operation uses per-rev feeds; feedrate arrives in native units
-    var _perRev = (sectionFeedMode == FEED_PER_REVOLUTION);
+    // CUSTOM: feed per rev - emit G95 when the operation uses per-rev feeds; feedrate arrives in native units.
+    // currentSection.feedMode reflects the setting when Fusion honors FPR for the cycle type. For TAPPING,
+    // Fusion may convert the feed to per-min (feedMode then reports per-min) even when the operator checked
+    // "feed per revolution" - but the operation's own setting survives as the tool_useFeedPerRevolution
+    // parameter. Tapping cycles derive F from thread pitch, so treating them as per-rev is always safe.
+    var _perRev = (currentSection.feedMode == FEED_PER_REVOLUTION);
     writeBlock(gFeedModeModal.format(_perRev ? 95 : 94));
     var g71 = z71Output.format(cycle.clearance);
     var F = _perRev ? cycle.feedrate : (cycle.feedrate * spindleSpeedScale);
@@ -2853,20 +2857,19 @@ function writeDrillCycle(cycle, x, y, z) {
     case "left-tapping-with-chip-breaking":
     case "right-tapping-with-chip-breaking":
       writeBlock(gFormat.format(71), g71);
-      if (cycle.accumulatedDepth < cycle.depth) {
-        error(localize("Accumulated pecking depth is not supported for tapping cycles with chip breaking."));
-      }
       if (!F) {
         F = tool.getTappingFeedrate();
       }
-      // K is retract amount
       writeBlock(
-        gPlaneModal.format(17), gCycleModal.format((tool.type == TOOL_TAP_LEFT_HAND ? 273 : 283)),
-        gFeedModeModal.format(95), // feed per revolution
+        gPlaneModal.format(17), gCycleModal.format((tool.type == TOOL_TAP_LEFT_HAND ? 272 : 282)),
         getCommonCycle(x, y, z, cycle.retract, cycle.clearance),
         conditional(P > 0, "P" + secFormat.format(P / 1000.0)),
-        "Q" + xyzFormat.format(cycle.incrementalDepth),
-        "F" + pitchFormat.format((gFeedModeModal.getCurrent() == 95) ? tool.getThreadPitch() : F), // for G95 F is pitch, for G94 F is pitch*spindle rpm
+        // Q takes priority over I/J, so only use Q for plain pecking; switch to I + J when an accumulated depth is in effect
+        conditional(cycle.accumulatedDepth >= cycle.depth, "Q" + xyzFormat.format(cycle.incrementalDepth)), // cutting depth per peck
+        conditional(cycle.accumulatedDepth < cycle.depth, "I" + xyzFormat.format(cycle.incrementalDepth)), // cutting depth per peck
+        conditional(cycle.accumulatedDepth < cycle.depth, "J" + xyzFormat.format(cycle.accumulatedDepth)), // tool tip drawing (accumulated) amount
+        "K" + xyzFormat.format(cycle.chipBreakDistance), // retract amount
+        "F" + pitchFormat.format(_perRev ? tool.getThreadPitch() : F), // for G95 F is pitch, for G94 F is pitch*spindle rpm
         sOutput.format(applyMaxSpindleRPM(spindleSpeed)),
         "E0", // spindle position
         mFormat.format(53)
