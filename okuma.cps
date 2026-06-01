@@ -3003,20 +3003,23 @@ function writeProbeCycle(cycle, x, y, z) {
   }
 
   var macroCall = settings.probing.macroCall;
+
+  // CUSTOM: every Renishaw O9901 probing branch rapids Z to a safe height, then
+  // issues a single "CALL O9901 PM=<mode> ... PS=<workOffset>" macro call. This
+  // helper holds that shared shape; callers pass the Z rapid target and the
+  // mode-specific middle arguments (PM=, PA/PD/PW/PE=...). The trailing PS= work
+  // offset word is always appended. writeBlock flattens the argument arrays.
+  function renishaw9901(zRapid, midArgs) {
+    gMotionModal.reset();
+    writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(zRapid));
+    writeBlock([macroCall + 9901].concat(midArgs).concat(["PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)]));
+  }
+
   switch (cycleType) {
   case "probing-x":
     // CUSTOM: Renishaw O9901 PM=1 single-surface X probe.
     if (getProperty("useRenishawProbing")) {
-      var apprX = approach(cycle.approach1);
-      var startX = x - apprX * (cycle.probeClearance + tool.diameter / 2);
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
-      writeBlock(
-        macroCall + 9901,
-        "PM=1",
-        "PA=" + integerFormat.format(apprX * 1),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z - cycle.depth, ["PM=1", "PA=" + integerFormat.format(approach(cycle.approach1) * 1)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
@@ -3030,16 +3033,7 @@ function writeProbeCycle(cycle, x, y, z) {
   case "probing-y":
     // CUSTOM: Renishaw O9901 PM=1 single-surface Y probe.
     if (getProperty("useRenishawProbing")) {
-      var apprY = approach(cycle.approach1);
-      var startY = y - apprY * (cycle.probeClearance + tool.diameter / 2);
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
-      writeBlock(
-        macroCall + 9901,
-        "PM=1",
-        "PA=" + integerFormat.format(apprY * 2),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z - cycle.depth, ["PM=1", "PA=" + integerFormat.format(approach(cycle.approach1) * 2)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
@@ -3053,14 +3047,7 @@ function writeProbeCycle(cycle, x, y, z) {
   case "probing-z":
     // CUSTOM: Renishaw O9901 PM=1 single-surface Z probe (Z-minus only).
     if (getProperty("useRenishawProbing")) {
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth + cycle.probeClearance));
-      writeBlock(
-        macroCall + 9901,
-        "PM=1",
-        "PA=-3",
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z - cycle.depth + cycle.probeClearance, ["PM=1", "PA=-3"]);
       break;
     }
     protectedProbeMove(cycle, x, y, Math.min(z - cycle.depth + cycle.probeClearance, cycle.retract));
@@ -3075,16 +3062,7 @@ function writeProbeCycle(cycle, x, y, z) {
     // CUSTOM: Renishaw O9901 PM=5 X-wall macro. Stay above the wall; PW is the
     // incremental Z plunge from the start position to the measurement depth (negative).
     if (getProperty("useRenishawProbing")) {
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
-      writeBlock(
-        macroCall + 9901,
-        "PM=5",
-        "PA=1",
-        "PD=" + xyzFormat.format(cycle.width1),
-        "PW=" + xyzFormat.format(-cycle.depth),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z, ["PM=5", "PA=1", "PD=" + xyzFormat.format(cycle.width1), "PW=" + xyzFormat.format(-cycle.depth)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z);
@@ -3101,16 +3079,7 @@ function writeProbeCycle(cycle, x, y, z) {
     // CUSTOM: Renishaw O9901 PM=5 Y-wall macro. Stay above the wall; PW is the
     // incremental Z plunge from the start position to the measurement depth (negative).
     if (getProperty("useRenishawProbing")) {
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
-      writeBlock(
-        macroCall + 9901,
-        "PM=5",
-        "PA=2",
-        "PD=" + xyzFormat.format(cycle.width1),
-        "PW=" + xyzFormat.format(-cycle.depth),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z, ["PM=5", "PA=2", "PD=" + xyzFormat.format(cycle.width1), "PW=" + xyzFormat.format(-cycle.depth)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z);
@@ -3127,15 +3096,7 @@ function writeProbeCycle(cycle, x, y, z) {
     // CUSTOM: Renishaw O9901 PM=4 X-channel (web) macro. Drop Z into the channel,
     // then call with PA=1 (X axis) and the nominal channel width.
     if (getProperty("useRenishawProbing")) {
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
-      writeBlock(
-        macroCall + 9901,
-        "PM=4",
-        "PA=1",
-        "PD=" + xyzFormat.format(cycle.width1),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z - cycle.depth, ["PM=4", "PA=1", "PD=" + xyzFormat.format(cycle.width1)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
@@ -3162,15 +3123,7 @@ function writeProbeCycle(cycle, x, y, z) {
     // CUSTOM: Renishaw O9901 PM=4 Y-channel (web) macro. Drop Z into the channel,
     // then call with PA=2 (Y axis) and the nominal channel width.
     if (getProperty("useRenishawProbing")) {
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
-      writeBlock(
-        macroCall + 9901,
-        "PM=4",
-        "PA=2",
-        "PD=" + xyzFormat.format(cycle.width1),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z - cycle.depth, ["PM=4", "PA=2", "PD=" + xyzFormat.format(cycle.width1)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
@@ -3197,15 +3150,7 @@ function writeProbeCycle(cycle, x, y, z) {
     // CUSTOM: Renishaw O9901 PM=3 circular-boss macro. Stay above the boss; PW is the
     // incremental Z plunge from the start position to the measurement depth (negative).
     if (getProperty("useRenishawProbing")) {
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
-      writeBlock(
-        macroCall + 9901,
-        "PM=3",
-        "PD=" + xyzFormat.format(cycle.width1),
-        "PW=" + xyzFormat.format(-cycle.depth),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z, ["PM=3", "PD=" + xyzFormat.format(cycle.width1), "PW=" + xyzFormat.format(-cycle.depth)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z);
@@ -3236,14 +3181,7 @@ function writeProbeCycle(cycle, x, y, z) {
     // CUSTOM: Renishaw O9901 PM=2 circular-hole probe. Rapid to the hole center XY,
     // drop Z to measurement depth, then issue the macro with the nominal diameter.
     if (getProperty("useRenishawProbing")) {
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z - cycle.depth));
-      writeBlock(
-        macroCall + 9901,
-        "PM=2",
-        "PD=" + xyzFormat.format(cycle.width1),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z - cycle.depth, ["PM=2", "PD=" + xyzFormat.format(cycle.width1)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
@@ -3313,16 +3251,7 @@ function writeProbeCycle(cycle, x, y, z) {
     // CUSTOM: Renishaw O9901 PM=11 boss-probe macro. Rapid to the start position above the
     // boss, then issue a single call with X/Y widths and an incremental Z plunge.
     if (getProperty("useRenishawProbing")) {
-      gMotionModal.reset();
-      writeBlock(gMotionModal.format(0), "Z" + xyzFormat.format(z));
-      writeBlock(
-        macroCall + 9901,
-        "PM=11",
-        "PD=" + xyzFormat.format(cycle.width1),
-        "PE=" + xyzFormat.format(cycle.width2),
-        "PW=" + xyzFormat.format(-cycle.depth),
-        "PS=" + probeWCSFormat.format(currentSection.probeWorkOffset)
-      );
+      renishaw9901(z, ["PM=11", "PD=" + xyzFormat.format(cycle.width1), "PE=" + xyzFormat.format(cycle.width2), "PW=" + xyzFormat.format(-cycle.depth)]);
       break;
     }
     protectedProbeMove(cycle, x, y, z);
@@ -3363,30 +3292,8 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-xy-inner-corner":
-    var cornerX = x + approach(cycle.approach1) * (cycle.probeClearance + tool.diameter / 2);
-    var cornerY = y + approach(cycle.approach2) * (cycle.probeClearance + tool.diameter / 2);
-    var cornerI = 0;
-    var cornerJ = 0;
-    if (cycle.probeSpacing !== undefined) {
-      cornerI = cycle.probeSpacing;
-      cornerJ = cycle.probeSpacing;
-    }
-    if ((cornerI != 0) && (cornerJ != 0)) {
-      if (currentSection.strategy == "probe") {
-        setProbeAngleMethod();
-        probeVariables.compensationXY = "X=VS75 Y=VS76";
-      }
-    }
-    protectedProbeMove(cycle, x, y, z - cycle.depth);
-    writeBlock(
-      macroCall + 9815, xOutput.format(cornerX), yOutput.format(cornerY),
-      conditional(cornerI != 0, "PI=" + xyzFormat.format(cornerI)),
-      conditional(cornerJ != 0, "PJ=" + xyzFormat.format(cornerJ)),
-      "PQ=" + xyzFormat.format(cycle.probeOvertravel),
-      getProbingArguments(cycle, true)
-    );
-    break;
   case "probing-xy-outer-corner":
+    // Inner (O9815) and outer (O9816) corner macros are identical apart from the macro number.
     var cornerX = x + approach(cycle.approach1) * (cycle.probeClearance + tool.diameter / 2);
     var cornerY = y + approach(cycle.approach2) * (cycle.probeClearance + tool.diameter / 2);
     var cornerI = 0;
@@ -3403,7 +3310,7 @@ function writeProbeCycle(cycle, x, y, z) {
     }
     protectedProbeMove(cycle, x, y, z - cycle.depth);
     writeBlock(
-      macroCall + 9816, xOutput.format(cornerX), yOutput.format(cornerY),
+      macroCall + (cycleType == "probing-xy-inner-corner" ? 9815 : 9816), xOutput.format(cornerX), yOutput.format(cornerY),
       conditional(cornerI != 0, "PI=" + xyzFormat.format(cornerI)),
       conditional(cornerJ != 0, "PJ=" + xyzFormat.format(cornerJ)),
       "PQ=" + xyzFormat.format(cycle.probeOvertravel),
@@ -3411,28 +3318,19 @@ function writeProbeCycle(cycle, x, y, z) {
     );
     break;
   case "probing-x-plane-angle":
-    protectedProbeMove(cycle, x, y, z - cycle.depth);
-    writeBlock(
-      macroCall + 9843,
-      "PX=" + xyzFormat.format(x + approach(cycle.approach1) * (cycle.probeClearance + tool.diameter / 2)),
-      "PD=" + xyzFormat.format(cycle.probeSpacing),
-      "PQ=" + xyzFormat.format(cycle.probeOvertravel),
-      "PA=" + xyzFormat.format(cycle.nominalAngle != undefined ? cycle.nominalAngle : 90),
-      getProbingArguments(cycle, false)
-    );
-    if (currentSection.strategy == "probe") {
-      setProbeAngleMethod();
-      probeVariables.compensationXY = "X" + xyzFormat.format(0) + " Y" + xyzFormat.format(0);
-    }
-    break;
   case "probing-y-plane-angle":
+    // X and Y plane-angle (O9843) differ only in the probed axis word and the
+    // default nominal angle (90 deg for X, 0 deg for Y).
+    var planeIsX = (cycleType == "probing-x-plane-angle");
     protectedProbeMove(cycle, x, y, z - cycle.depth);
     writeBlock(
       macroCall + 9843,
-      "PY=" + xyzFormat.format(y + approach(cycle.approach1) * (cycle.probeClearance + tool.diameter / 2)),
+      planeIsX ?
+        "PX=" + xyzFormat.format(x + approach(cycle.approach1) * (cycle.probeClearance + tool.diameter / 2)) :
+        "PY=" + xyzFormat.format(y + approach(cycle.approach1) * (cycle.probeClearance + tool.diameter / 2)),
       "PD=" + xyzFormat.format(cycle.probeSpacing),
       "PQ=" + xyzFormat.format(cycle.probeOvertravel),
-      "PA=" + xyzFormat.format(cycle.nominalAngle != undefined ? cycle.nominalAngle : 0),
+      "PA=" + xyzFormat.format(cycle.nominalAngle != undefined ? cycle.nominalAngle : (planeIsX ? 90 : 0)),
       getProbingArguments(cycle, false)
     );
     if (currentSection.strategy == "probe") {
@@ -3441,22 +3339,10 @@ function writeProbeCycle(cycle, x, y, z) {
     }
     break;
   case "probing-xy-pcd-hole":
-    protectedProbeMove(cycle, x, y, z);
-    writeBlock(
-      macroCall + 9819,
-      "PA=" + xyzFormat.format(cycle.pcdStartingAngle),
-      "PB=" + xyzFormat.format(cycle.numberOfSubfeatures),
-      "PC=" + xyzFormat.format(cycle.widthPCD),
-      "PD=" + xyzFormat.format(cycle.widthFeature),
-      "PK=" + xyzFormat.format(z - cycle.depth),
-      "PQ=" + xyzFormat.format(cycle.probeOvertravel),
-      getProbingArguments(cycle, false)
-    );
-    if (cycle.updateToolWear) {
-      error(localize("Action -Update Tool Wear- is not supported with this cycle."));
-    }
-    break;
   case "probing-xy-pcd-boss":
+    // Hole and boss PCD (O9819) differ only in the Z-position word (PK vs PZ) and
+    // the boss-only PR clearance word.
+    var pcdIsBoss = (cycleType == "probing-xy-pcd-boss");
     protectedProbeMove(cycle, x, y, z);
     writeBlock(
       macroCall + 9819,
@@ -3464,9 +3350,9 @@ function writeProbeCycle(cycle, x, y, z) {
       "PB=" + xyzFormat.format(cycle.numberOfSubfeatures),
       "PC=" + xyzFormat.format(cycle.widthPCD),
       "PD=" + xyzFormat.format(cycle.widthFeature),
-      "PZ=" + xyzFormat.format(z - cycle.depth),
+      (pcdIsBoss ? "PZ=" : "PK=") + xyzFormat.format(z - cycle.depth),
       "PQ=" + xyzFormat.format(cycle.probeOvertravel),
-      "PR=" + xyzFormat.format(cycle.probeClearance),
+      conditional(pcdIsBoss, "PR=" + xyzFormat.format(cycle.probeClearance)),
       getProbingArguments(cycle, false)
     );
     if (cycle.updateToolWear) {
