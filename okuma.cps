@@ -1422,14 +1422,18 @@ function onSection() {
   initializeSmoothing(); // initialize smoothing mode
 
   if (insertToolCall || newWorkOffset || newWorkPlane || smoothing.cancel || state.tcpIsActive || currentSection.isMultiAxis()) {
+    var purgeThroughSpindleAir = false;
     if (insertToolCall && !isFirstSection()) {
-      onCommand(COMMAND_COOLANT_OFF); // turn off coolant before retract during tool change
+      purgeThroughSpindleAir = coolantOffWithThroughSpindlePurge(); // turn off coolant (+ start through-spindle air purge) before retract during tool change
       onCommand(COMMAND_STOP_SPINDLE); // stop spindle before retract during tool change
     }
     if (!isFirstSection() && (insertToolCall || newWorkPlane)) {
       cancelWorkPlane();
     }
     writeRetract(Z); // retract
+    if (purgeThroughSpindleAir) {
+      stopThroughSpindleAirPurge(); // stop through-spindle air now that the tool is clear of the part
+    }
     disableLengthCompensation();
     setCAS(true);
     if (isFirstSection()) {
@@ -3919,6 +3923,26 @@ function onSectionEnd() {
   rotaryAxisDirectionModal.reset(); // reset rotary axis direction code for the next operation
 }
 
+// CUSTOM: through-spindle air purge. When an operation running through-spindle
+// coolant ends, blow air down the spindle (M339) to clear coolant out of the tool -
+// started right after the coolant is shut off and left running through the Z retract,
+// then shut off (M9) once the tool is clear of the part. coolantOffWithThroughSpindlePurge()
+// replaces the bare COMMAND_COOLANT_OFF that precedes a retract; it returns true when air
+// was started, signalling the caller to call stopThroughSpindleAirPurge() after writeRetract(Z).
+// currentCoolantMode is read before the coolant-off so it still reflects the ending operation.
+function coolantOffWithThroughSpindlePurge() {
+  var purgeAir = currentCoolantMode == COOLANT_THROUGH_TOOL || currentCoolantMode == COOLANT_FLOOD_THROUGH_TOOL;
+  onCommand(COMMAND_COOLANT_OFF);
+  if (purgeAir) {
+    writeBlock(mFormat.format(M.COOLANT_AIR_THROUGH)); // M339: blow air down the spindle to clear through-tool coolant
+  }
+  return purgeAir;
+}
+
+function stopThroughSpindleAirPurge() {
+  writeBlock(mFormat.format(M.COOLANT_OFF)); // M9: stop the through-spindle air now that the tool is clear of the part
+}
+
 /** Output block to do safe retract and/or move to home position. */
 function writeRetract() {
   var retract = getRetractParameters.apply(this, arguments);
@@ -3967,13 +3991,16 @@ function writeRetract() {
 // home so the table is clear for the shuttle. Runs once for No-Pallets/Single and
 // once per pallet copy for Continuous (where it is captured into the body buffer).
 function writePerPalletEnd() {
-  onCommand(COMMAND_COOLANT_OFF);
+  var purgeThroughSpindleAir = coolantOffWithThroughSpindlePurge();
   onCommand(COMMAND_STOP_SPINDLE);
 
   if (machineConfiguration.isMultiAxisConfiguration()) {
     cancelWorkPlane();
   }
   writeRetract(Z);
+  if (purgeThroughSpindleAir) {
+    stopThroughSpindleAirPurge(); // stop through-spindle air now that the tool is clear of the part
+  }
   if (getSetting("retract.homeXY.onProgramEnd", false)) {
     writeRetract(settings.retract.homeXY.onProgramEnd);
   }
