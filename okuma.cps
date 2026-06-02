@@ -1434,6 +1434,9 @@ function onSection() {
     if (purgeThroughSpindleAir) {
       stopThroughSpindleAirPurge(); // stop through-spindle air now that the tool is clear of the part
     }
+    if (insertToolCall && !isFirstSection()) {
+      writeBreakControl(getPreviousSection().getTool()); // break-check the finishing tool before its tool change
+    }
     disableLengthCompensation();
     setCAS(true);
     if (isFirstSection()) {
@@ -3897,14 +3900,11 @@ function onSectionEnd() {
     writeBlock(gFeedModeModal.format(G.FEED_PER_MIN));
   }
 
-  if (!isLastSection()) {
-    if (getNextSection().getTool().coolant != tool.coolant) {
-      setCoolant(COOLANT_OFF);
-    }
-    if (tool.breakControl && isToolChangeNeeded(getNextSection(), getProperty("toolAsName") ? "description" : "number")) {
-      onCommand(COMMAND_BREAK_CONTROL);
-    }
-  }
+  // Coolant for the finishing tool is left on here and turned off by the next
+  // section's tool-change wrap-up (coolantOffWithThroughSpindlePurge), so the
+  // through-spindle air purge can detect that through coolant was running. Turning
+  // it off pre-emptively here would clear currentCoolantMode and suppress the M339
+  // purge whenever the next tool uses a different coolant.
   if (tcp.isSupportedByOperation) {
     writeBlock(conditional(getProperty("useTPOC"), gFormat.format(G.TPOC_OFF)));
   }
@@ -3941,6 +3941,17 @@ function coolantOffWithThroughSpindlePurge() {
 
 function stopThroughSpindleAirPurge() {
   writeBlock(mFormat.format(M.COOLANT_OFF)); // M9: stop the through-spindle air now that the tool is clear of the part
+}
+
+// CUSTOM: tool break check (G118). Emitted for any tool whose definition has the
+// "break control" checkbox enabled, after the spindle has stopped (M5) and the tool
+// has retracted in Z - i.e. just before its tool change, or at the end of program.
+function writeBreakControl(checkTool) {
+  if (!checkTool.breakControl) {
+    return;
+  }
+  writeComment("BREAK CONTROL T" + toolFormat.format(checkTool.number));
+  writeBlock(gFormat.format(118), "X0", "Y0", "S0", "Z0.01"); // G118 tool break check
 }
 
 /** Output block to do safe retract and/or move to home position. */
@@ -4001,6 +4012,7 @@ function writePerPalletEnd() {
   if (purgeThroughSpindleAir) {
     stopThroughSpindleAirPurge(); // stop through-spindle air now that the tool is clear of the part
   }
+  writeBreakControl(tool); // break-check the final tool at program end
   if (getSetting("retract.homeXY.onProgramEnd", false)) {
     writeRetract(settings.retract.homeXY.onProgramEnd);
   }
