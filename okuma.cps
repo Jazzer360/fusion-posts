@@ -253,6 +253,15 @@ properties = {
     value      : 0,
     scope      : ["post", "machine"]
   },
+  // CUSTOM: M300 cycle-time reduction - spindle spins up while the tool rapids to the start.
+  useM300: {
+    title      : "Spin up during positioning (M300)",
+    description: "Adds M300 to the spindle-start block so the program rapids to the operation start without waiting for the spindle to reach speed, then re-issues the M3/M4 just before cutting to wait for it. Requires the machine's cycle-time reduction option.",
+    group      : "tool",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
 
   // ---- Cycles & Smoothing ----
   useG284: {
@@ -669,6 +678,7 @@ var M = {
   SPINDLE_CW            : 3,   // M3   spindle on, clockwise
   SPINDLE_CCW           : 4,   // M4   spindle on, counterclockwise
   SPINDLE_STOP          : 5,   // M5   spindle stop
+  SPINDLE_NO_WAIT       : 300, // M300 cycle-time reduction: don't wait for the M3/M4 spindle-up answer signal (same block as M3/M4)
   TOOL_CHANGE           : 6,   // M6   tool change
   ORIENT_SPINDLE        : 19,  // M19  spindle orientation
   CYCLE_RETURN_SPECIFIED: 53,  // M53  fixed-cycle return to specified (G71) level (group 13, modal)
@@ -1538,6 +1548,15 @@ function onSection() {
   }
   if (typeof inspectionProcessSectionStart == "function") {
     inspectionProcessSectionStart();
+  }
+
+  // CUSTOM: M300 cycle-time reduction. The spindle was started with M300 above, so the
+  // positioning rapids ran without waiting for it to reach speed. Re-issue the bare M3/M4
+  // now - after all positioning, immediately before the cut/subprogram call - to wait for
+  // the spindle answer signal before cutting begins. See COMMAND_START_SPINDLE.
+  if (spindleConfirmPending) {
+    writeBlock(mFormat.format(tool.clockwise ? M.SPINDLE_CW : M.SPINDLE_CCW));
+    spindleConfirmPending = false;
   }
 
   if (subprogramsAreSupported()) {
@@ -3821,10 +3840,22 @@ function onCommand(command) {
     return;
   case COMMAND_START_SPINDLE:
     forceSpindleSpeed = false;
-    writeBlock(sOutput.format(applyMaxSpindleRPM(spindleSpeed)), mFormat.format(tool.clockwise ? M.SPINDLE_CW : M.SPINDLE_CCW));
+    // CUSTOM: M300 cycle-time reduction - append M300 so the spindle spins up while the
+    // tool rapids to the operation start; onSection re-issues the bare M3/M4 right before
+    // the cut to wait for the spindle answer signal. spindleConfirmPending drives that.
+    spindleConfirmPending = getProperty("useM300") && tool.type != TOOL_PROBE;
+    writeBlock(
+      sOutput.format(applyMaxSpindleRPM(spindleSpeed)),
+      mFormat.format(tool.clockwise ? M.SPINDLE_CW : M.SPINDLE_CCW),
+      conditional(spindleConfirmPending, mFormat.format(M.SPINDLE_NO_WAIT))
+    );
     return;
   case COMMAND_STOP_SPINDLE:
-    writeBlock(mFormat.format(M.SPINDLE_STOP));
+    // CUSTOM: M300 cycle-time reduction - append M300 so the spindle stop overlaps the
+    // following retract instead of waiting for the answer signal. No confirming M5 is
+    // needed: the next tool change requires spindle orientation, which blocks until the
+    // spindle has actually stopped and oriented.
+    writeBlock(mFormat.format(M.SPINDLE_STOP), conditional(getProperty("useM300"), mFormat.format(M.SPINDLE_NO_WAIT)));
     if (getProperty("dwellAfterStop") > 0) {
       onDwell(getProperty("dwellAfterStop"));
     }
@@ -3934,7 +3965,7 @@ function coolantOffWithThroughSpindlePurge() {
   var purgeAir = currentCoolantMode == COOLANT_THROUGH_TOOL || currentCoolantMode == COOLANT_FLOOD_THROUGH_TOOL;
   onCommand(COMMAND_COOLANT_OFF);
   if (purgeAir) {
-    writeBlock(mFormat.format(M.COOLANT_AIR_THROUGH)); // M339: blow air down the spindle to clear through-tool coolant
+    writeBlock(mFormat.format(M.COOLANT_AIR_THROUGH), "(Through Air Purge)"); // M339: blow air down the spindle to clear through-tool coolant
   }
   return purgeAir;
 }
@@ -4321,6 +4352,7 @@ var sequenceNumber;
 var optionalSection = false;
 var currentWorkOffset;
 var forceSpindleSpeed = false;
+var spindleConfirmPending = false; // CUSTOM: M300 - a spindle-start with M300 was issued, so re-confirm the spindle (M3/M4) before cutting
 var operationNeedsSafeStart = false; // used to convert blocks to optional for safeStartAllOperations
 
 function activateMachine() {
