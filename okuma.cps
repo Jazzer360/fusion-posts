@@ -5642,7 +5642,7 @@ function writeProgramHeader() {
         var col3 = c.typeName;
         var col4 = c.extras.join(" ");
         var col5 = zRanges[tool.number] ? "ZMIN=" + xyzFormat.format(zRanges[tool.number].getMinimum()) : "";
-        rows.push([col0, col1, col2, col3, col4, col5]);
+        rows.push([col0, col1, col2, col3, col5, col4]);
         w[0] = Math.max(w[0], col0.length);
         w[1] = Math.max(w[1], col1.length);
         w[2] = Math.max(w[2], col2.length);
@@ -5788,7 +5788,31 @@ function subprogramCall() {
   } else {
     callBlock = subprogramResolveSetting(settings.subprograms.callBlock.embedded, subprogramState.currentSubprogram);
   }
-  writeBlock(callBlock); // call subprogram
+  // CUSTOM: echo the operation's working feedrate next to the call. With subroutines the
+  // F word only appears inside the subprogram body at the bottom of the file, so repeating
+  // it here keeps the header section readable for sanity-checking the program.
+  writeBlock(callBlock, getOperationFeedComment()); // call subprogram
+}
+
+// CUSTOM: build the "(F<feed>)" comment for a subprogram call. The call is written before
+// the toolpath is processed (cycle.feedrate isn't available yet), so the feed is read from
+// the section parameters: drilling cycles run at the plunge feed (tool_feedCutting is the
+// unused lateral feed for straight drilling), milling runs at the cutting feed. Per-minute
+// feeds are scaled by spindleSpeedScale to match the value actually programmed when the
+// maximumSpindleRPM cap is active; per-rev (G95) feeds pass through unscaled.
+function getOperationFeedComment() {
+  var param = currentSection.hasAnyCycle() ? "operation:tool_feedPlunge" : "operation:tool_feedCutting";
+  if (!currentSection.hasParameter(param)) {
+    param = "operation:tool_feedCutting"; // fall back if the preferred feed isn't present
+  }
+  if (!currentSection.hasParameter(param)) {
+    return ""; // no feed to report (e.g. probing) - emit a bare call
+  }
+  var feed = currentSection.getParameter(param);
+  if (currentSection.feedMode != FEED_PER_REVOLUTION) {
+    feed *= spindleSpeedScale;
+  }
+  return formatComment("F" + feedFormat.format(feed));
 }
 
 /** End of subprogram and close redirection. */
