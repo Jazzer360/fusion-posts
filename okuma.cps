@@ -200,12 +200,16 @@ properties = {
     scope      : "post"
   },
   safeToolChange: {
-    title      : "Enable safe tool change logic",
-    description: "Use logic to check if the tool called is staged or already loaded.",
+    title      : "Safe tool change method",
+    description: "How to perform safe tool changes (always on). 'Conditional' emits inline VTLCN/VTLNN checks that skip the M6 when the tool is already in the spindle or staged. 'G116 macro' calls the machine's G116 T<tool> Q<next> tool-change macro instead.",
     group      : "tool",
-    type       : "boolean",
-    value      : true,
-    scope      : "post"
+    type       : "enum",
+    values     : [
+      {title:"Conditional (VTLCN/VTLNN)", id:"conditional"},
+      {title:"G116 macro", id:"g116"}
+    ],
+    value      : "conditional",
+    scope      : ["post", "machine"]
   },
   offsetCode: {
     title      : "Tool length/diameter offset code",
@@ -730,7 +734,7 @@ var settings = {
       {id:COOLANT_FLOOD, on:8},
       {id:COOLANT_MIST, on:125},
       {id:COOLANT_THROUGH_TOOL, on:51},
-      {id:COOLANT_AIR, on:12},
+      {id:COOLANT_AIR, on:[12, 339]},
       {id:COOLANT_AIR_THROUGH_TOOL, on:[339]},
       {id:COOLANT_SUCTION},
       {id:COOLANT_FLOOD_MIST, on:[8, 125]},
@@ -3864,35 +3868,30 @@ function onCommand(command) {
     setSpindleLoadMonitor(false); // disable spindle load monitoring
     writeComment(tool.comment);
     var toolCall = "T" + toolFormat.format(tool.number);
-    if (getProperty("preloadTool")) {
-      if (getProperty("safeToolChange")) {
-        writeBlock("IF [ VTLCN EQ", toolFormat.format(tool.number), "]", skipNLines(5));
-        writeBlock("IF [ VTLNN EQ", toolFormat.format(tool.number), "]", skipNLines(3));
-        writeBlock("IF [ VTLNN EQ 0 ]", skipNLines(2));
-        writeBlock(mFormat.format(64)); // M64: machine-specific (tool-preload related); meaning unconfirmed, left raw
-        writeToolBlock(mFormat.format(M.TOOL_CHANGE), toolCall);
-      } else {
-        if (!isFirstSection()) {
-          writeComment(toolCall);
-          writeToolBlock(mFormat.format(M.TOOL_CHANGE));
-        } else {
-          writeToolBlock(toolCall, mFormat.format(M.TOOL_CHANGE));
-        }
-      }
-      var preloadTool = getNextTool(tool.number != getFirstTool().number);
+    // Next tool to stage (wraps to the first tool after the last); undefined when preload is off or none.
+    var preloadTool = getProperty("preloadTool") ? getNextTool(tool.number != getFirstTool().number) : undefined;
+    if (getProperty("safeToolChange") == "g116") {
+      // G116 macro performs the safe tool change (and stages the next tool via Q) in a single call.
+      var qWord = (preloadTool != undefined) ? ("Q" + toolFormat.format(preloadTool.number)) : "";
+      writeToolBlock(gFormat.format(116), toolCall, qWord);
+    } else if (getProperty("preloadTool")) {
+      // Conditional safe change with preload: skip the M6 when the tool is already in the spindle
+      // (VTLCN) or already staged (VTLNN); otherwise stage (M64) and change, then preload the next.
+      writeBlock("IF [ VTLCN EQ", toolFormat.format(tool.number), "]", skipNLines(5));
+      writeBlock("IF [ VTLNN EQ", toolFormat.format(tool.number), "]", skipNLines(3));
+      writeBlock("IF [ VTLNN EQ 0 ]", skipNLines(2));
+      writeBlock(mFormat.format(64)); // M64: machine-specific (tool-preload related); meaning unconfirmed, left raw
+      writeToolBlock(mFormat.format(M.TOOL_CHANGE), toolCall);
       if (preloadTool) {
         writeBlock("T" + toolFormat.format(preloadTool.number)); // preload next/first tool
-      } else if (getProperty("safeToolChange")) {
+      } else {
         writeBlock(formatComment("*"));
       }
     } else {
-      if (getProperty("safeToolChange")) {
-        writeBlock("IF [ VTLCN EQ", toolFormat.format(tool.number), "]", skipNLines(2));
-        writeToolBlock(mFormat.format(M.TOOL_CHANGE), toolCall);
-        writeBlock(formatComment("*"));
-      } else {
-        writeToolBlock(toolCall, mFormat.format(M.TOOL_CHANGE));
-      }
+      // Conditional safe change without preload: skip the M6 when the tool is already current.
+      writeBlock("IF [ VTLCN EQ", toolFormat.format(tool.number), "]", skipNLines(2));
+      writeToolBlock(mFormat.format(M.TOOL_CHANGE), toolCall);
+      writeBlock(formatComment("*"));
     }
     setProperty("showSequenceNumbers", saveShowSequenceNumbers);
     return;
