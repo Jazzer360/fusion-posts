@@ -103,10 +103,19 @@ groupDefinitions = {
     description: "Optional stops and subroutine-style program output.",
     order      : 8
   },
+  // CUSTOM: per-feature block-skip ("/") toggles. Each property in this group
+  // makes a particular block of output optional by prefixing it with a slash so
+  // the operator can include/skip it at the control's block-skip switch
+  // (e.g. attended vs unattended running).
+  blockSkip: {
+    title      : "Block Skip (Optional Blocks)",
+    description: "Prefix selected blocks with a slash (/) so they can be toggled on/off at the control's block-skip switch. Useful for code that should run during attended operation but be skippable when running unattended.",
+    order      : 9
+  },
   output: {
     title      : "Program Output & Formatting",
     description: "Sequence numbers, word spacing, and operation notes.",
-    order      : 9
+    order      : 10
   }
 };
 
@@ -566,6 +575,20 @@ properties = {
     title      : "Show notes",
     description: "Writes operation notes as comments in the outputted code.",
     group      : "output",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+
+  // ---- Block Skip (Optional Blocks) ----
+  // CUSTOM: each boolean here makes one feature's output blocks optional by
+  // prefixing them with "/" (block skip). To add a new toggle: add a boolean
+  // property to the "blockSkip" group and wrap that feature's writeBlock calls
+  // in withBlockSkip("<propertyName>", function () { ... }).
+  blockSkipBreakControl: {
+    title      : "Block-skip tool break checks",
+    description: "Prefixes the G118 tool break-check blocks with a slash (/) so they can be toggled with the control's block-skip switch. Useful to run break checks during attended operation and skip them when running unattended. The break check itself is still enabled per-tool by the tool's 'break control' setting.",
+    group      : "blockSkip",
     type       : "boolean",
     value      : false,
     scope      : "post"
@@ -3973,6 +3996,22 @@ function stopThroughSpindleAirPurge() {
   writeBlock(mFormat.format(M.COOLANT_OFF)); // M9: stop the through-spindle air now that the tool is clear of the part
 }
 
+// CUSTOM: run fn() with block-skip ("/") enabled when the given "blockSkip"-group
+// property is on, so the blocks fn() writes are prefixed with a slash and can be
+// toggled at the control. Restores the previous skipBlocks state afterwards.
+// See the "Block Skip (Optional Blocks)" property group.
+function withBlockSkip(propertyName, fn) {
+  var saveSkipBlocks = skipBlocks;
+  if (getProperty(propertyName)) {
+    skipBlocks = true;
+  }
+  try {
+    fn();
+  } finally {
+    skipBlocks = saveSkipBlocks;
+  }
+}
+
 // CUSTOM: tool break check (G118). Emitted for any tool whose definition has the
 // "break control" checkbox enabled, after the spindle has stopped (M5) and the tool
 // has retracted in Z - i.e. just before its tool change, or at the end of program.
@@ -3981,7 +4020,9 @@ function writeBreakControl(checkTool) {
     return;
   }
   writeComment("BREAK CONTROL T" + toolFormat.format(checkTool.number));
-  writeBlock(gFormat.format(118), "X0", "Y0", "S0", "Z0.01"); // G118 tool break check
+  withBlockSkip("blockSkipBreakControl", function () {
+    writeBlock(gFormat.format(118), "X0", "Y0", "S0", "Z0.01"); // G118 tool break check
+  });
 }
 
 /** Output block to do safe retract and/or move to home position. */
