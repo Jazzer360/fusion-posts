@@ -6108,25 +6108,63 @@ function subprogramCall() {
   writeBlock(callBlock, getOperationFeedComment()); // call subprogram
 }
 
-// CUSTOM: build the "(F<feed>)" comment for a subprogram call. The call is written before
-// the toolpath is processed (cycle.feedrate isn't available yet), so the feed is read from
-// the section parameters: drilling cycles run at the plunge feed (tool_feedCutting is the
-// unused lateral feed for straight drilling), milling runs at the cutting feed. Per-minute
-// feeds are scaled by spindleSpeedScale to match the value actually programmed when the
-// maximumSpindleRPM cap is active; per-rev (G95) feeds pass through unscaled.
+// CUSTOM: build the feed-rate comment for a subprogram call line, showing IPM, IPR, and IPT
+// (or MM/MIN, MM/REV, MM/T in metric) so the header is self-contained for sanity-checking
+// without digging into the subprogram body. The call is written before the toolpath is
+// processed, so cycle.feedrate is not available; feeds are derived from section parameters
+// or tool properties. Tapping bypasses the parameter lookup entirely -- Fusion computes
+// tapping feed from pitch x RPM and does not populate tool_feedPlunge for taps.
+//
+// ipm: per-min feed as actually programmed (scaled for maximumSpindleRPM cap if active)
+// ipr: per-rev feed (ipm / effective-RPM, or pitch for taps)
+// ipt: per-tooth chip load (ipm / (effective-RPM * flutes)); omitted when flutes == 0
 function getOperationFeedComment() {
-  var param = currentSection.hasAnyCycle() ? "operation:tool_feedPlunge" : "operation:tool_feedCutting";
-  if (!currentSection.hasParameter(param)) {
-    param = "operation:tool_feedCutting"; // fall back if the preferred feed isn't present
+  var tool      = currentSection.getTool();
+  var effRPM    = getEffectiveSpindleRPM(spindleSpeed); // capped RPM
+  var _perRev   = (currentSection.feedMode == FEED_PER_REVOLUTION);
+  var ipm, ipr;
+
+  if (tool.type == TOOL_TAP_RIGHT_HAND || tool.type == TOOL_TAP_LEFT_HAND) {
+    // Tapping: feedrate = pitch * RPM; pitch is also the per-rev value.
+    ipm = tool.getTappingFeedrate() * spindleSpeedScale; // pitch * capped RPM
+    ipr = tool.getThreadPitch();
+  } else {
+    var param = currentSection.hasAnyCycle() ? "operation:tool_feedPlunge" : "operation:tool_feedCutting";
+    if (!currentSection.hasParameter(param)) {
+      param = "operation:tool_feedCutting";
+    }
+    if (!currentSection.hasParameter(param)) {
+      return ""; // no feed to report (e.g. probing)
+    }
+    var feed = currentSection.getParameter(param);
+    if (_perRev) {
+      ipr = feed;
+      ipm = (effRPM > 0) ? ipr * effRPM : 0;
+    } else {
+      ipm = feed * spindleSpeedScale;
+      ipr = (effRPM > 0) ? ipm / effRPM : 0;
+    }
   }
-  if (!currentSection.hasParameter(param)) {
-    return ""; // no feed to report (e.g. probing) - emit a bare call
+
+  if (!ipm && !ipr) { return ""; }
+
+  var flutes = tool.getNumberOfFlutes();
+  // IPT is meaningful for milling cutters; skip it for drills and taps (chip load per flute
+  // doesn't apply the same way, and the number is misleading for hole-making tools).
+  var isTapOrDrill = (tool.type == TOOL_TAP_RIGHT_HAND || tool.type == TOOL_TAP_LEFT_HAND ||
+                      isDrillFamily(tool.type));
+  var ipt = (!isTapOrDrill && flutes > 0 && effRPM > 0) ? (ipm / (effRPM * flutes)) : 0;
+
+  var lMin   = (unit == MM) ? "MM/MIN" : "IPM";
+  var lRev   = (unit == MM) ? "MM/REV" : "IPR";
+  var lTooth = (unit == MM) ? "MM/T"   : "IPT";
+
+  var s = "Feed: " + feedFormat.format(ipm) + " " + lMin;
+  s +=   " / " + pitchFormat.format(ipr) + " " + lRev;
+  if (ipt) {
+    s += " / " + pitchFormat.format(ipt) + " " + lTooth;
   }
-  var feed = currentSection.getParameter(param);
-  if (currentSection.feedMode != FEED_PER_REVOLUTION) {
-    feed *= spindleSpeedScale;
-  }
-  return formatComment("F" + feedFormat.format(feed));
+  return formatComment(s);
 }
 
 /** End of subprogram and close redirection. */
