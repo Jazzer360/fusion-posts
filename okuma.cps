@@ -760,7 +760,7 @@ var settings = {
       {id:COOLANT_AIR_THROUGH_TOOL, on:[339]},
       {id:COOLANT_SUCTION},
       {id:COOLANT_FLOOD_MIST, on:[8, 125]},
-      {id:COOLANT_FLOOD_THROUGH_TOOL, on:[8, 51, 125]},
+      {id:COOLANT_FLOOD_THROUGH_TOOL, on:[8, 51]},
       {id:COOLANT_OFF, off:9}
     ],
     singleLineCoolant: false, // specifies to output multiple coolant codes in one line rather than in separate lines
@@ -1319,6 +1319,20 @@ function onOpen() {
     defineMachine(); // hardcoded machine configuration
   }
   activateMachine(); // enable the machine optimizations and settings
+
+  // CUSTOM: flood-includes-mist -- patch the coolants table so any flood-based mode
+  // also fires M125 (mist) when the property is on. Done here once, before any coolant
+  // codes fly. COOLANT_FLOOD_MIST is left alone (mist is always explicit there).
+  if (getProperty("floodIncludesMist")) {
+    var coolants = settings.coolant.coolants;
+    for (var i = 0; i < coolants.length; ++i) {
+      if (coolants[i].id === COOLANT_FLOOD) {
+        coolants[i].on = [M.COOLANT_FLOOD, M.COOLANT_MIST];                          // M8 + M125
+      } else if (coolants[i].id === COOLANT_FLOOD_THROUGH_TOOL) {
+        coolants[i].on = [M.COOLANT_FLOOD, M.COOLANT_THROUGH, M.COOLANT_MIST];       // M8 + M51 + M125
+      }
+    }
+  }
 
   // CUSTOM: build the tombstone rotary WCS rank map (after the machine is known).
   initTombstoneRotaryWCS();
@@ -5698,6 +5712,16 @@ properties.writeTools = {
 // script instead. The post just picks one entry at random at post time.
 // formatComment() filters to permittedCommentChars and clips to 80 chars, so
 // odd punctuation/length is handled automatically.
+// CUSTOM: when enabled, flood coolant (M8) also fires mist (M125) -- workaround for
+// machines whose coolant plumbing routes mist through the flood circuit.
+properties.floodIncludesMist = {
+  title      : "Flood includes mist",
+  description: "When enabled, any flood coolant call also outputs M125 (mist). Use when the machine's flood and mist share a circuit.",
+  group      : "output",
+  type       : "boolean",
+  value      : false,
+  scope      : ["post", "machine"]
+};
 properties.writeShopJoke = {
   title      : "Write shop joke",
   description: "Print one random joke from the refreshable pool in the program header.",
