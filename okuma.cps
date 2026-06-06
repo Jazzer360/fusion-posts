@@ -1359,6 +1359,7 @@ function onOpen() {
   }
 
   writeln("O" + getProgramName());
+  writeShopJoke(); // CUSTOM: shop joke -- random ribbing in the header (pool refreshed by tools/refresh-jokes.ps1)
   writeComment(programComment);
   writeProgramHeader();
   warnMisalignedTaps(); // CUSTOM: warn on taps whose size/pitch combo isn't in the tap table
@@ -5688,6 +5689,194 @@ properties.writeTools = {
   value      : true,
   scope      : "post"
 };
+// CUSTOM: shop joke -- emit one random joke as a header comment.
+// IMPORTANT: the post engine is sandboxed (no network, no file reads), so the
+// actual Gemini Flash call lives in tools/refresh-jokes.ps1. That script
+// rewrites the SHOP_JOKES array below in place; do not hand-edit the array
+// (your edits get clobbered on the next refresh) -- tweak the prompt in the
+// script instead. The post just picks one entry at random at post time.
+// formatComment() filters to permittedCommentChars and clips to 80 chars, so
+// odd punctuation/length is handled automatically.
+properties.writeShopJoke = {
+  title      : "Write shop joke",
+  description: "Print one random joke from the refreshable pool in the program header.",
+  group      : "output",
+  type       : "boolean",
+  value      : true,
+  scope      : "post"
+};
+
+// >>> SHOP_JOKES_BEGIN (rewritten by tools/refresh-jokes.ps1 -- edit the prompt there, not this array)
+var SHOP_JOKES = [
+  "tight tolerances and loose morals -- the shop motto",
+  "she said it was too deep. i said thats what the boring bar is for",
+  "run it balls out and blame the operator",
+  "i like my finishes fine and my jokes coarse",
+  "measure twice, cuss once",
+  "if it aint leaking coolant it aint trying",
+  "hard jaws, soft hands, questionable decisions",
+  "nothing worse than a soft tool at critical depth",
+  "the boring bar gets more action than most guys on this floor",
+  "it aint the size of the tool, its how you hold it",
+  "back it off and try again, works every time",
+  "always check your runout before you go too deep",
+  "running dry is for amateurs",
+  "sometimes you just gotta grab it and twist",
+  "the tighter the fit the more satisfying the press",
+  "full depth on the first pass, cowboy style",
+  // peck drilling = drill a short depth, retract to clear chips, re-enter, repeat -- the double entendre is built right into the cycle name
+  "pecking cycle - just keep going back for more",
+  "i like my coolant like my humor - dirty and recycled",
+  "the scrap bin is where good intentions go to die",
+  "nice depth, shame about the finish",
+  // thread milling lets you make multiple radial passes to sneak up on final diameter -- "close" is intentional, unlike tapping where you commit all at once. riff on "...horseshoes and hand grenades"
+  "close only counts in horseshoes and thread milling",
+  "probe it before you commit, words to live by",
+  "flood coolant solves most problems, ask anyone",
+  "nobody reads the setup sheet until something breaks",
+  "machinists dont retire, they just run out of feedrate",
+  "experience is just scar tissue and chip burns",
+  "zero your z like youre committing to the relationship",
+  "the spindle dont care about your feelings, just your rpm",
+  "one day ill write an appropriate comment. today is not that day",
+  "always chamfer your entry point, in machining and in life",
+  "if the vise is shaking, tighten it. applies to most things",
+  // endmill deflection from cutting forces bows the tool outward, leaving an unintended radius or extra material -- reframing tool failure as a gift
+  "its not deflection, its a bonus radius",
+  "smooth operation requires plenty of lubrication",
+  "a clean machine is a sign that something went very wrong",
+  "if you can hear the insert screaming its already too late",
+  "nothing says good morning like a face mill at full width",
+  "the tool path looked great in simulation. the part disagreed",
+  "only thing longer than setup is the argument about it",
+  "i cleaned up once, couldnt find anything for a week",
+  "trust the print, verify the print, then ignore it and measure",
+  "paul approved this program. all complaints go to paul",
+  "dedicated to paul, who still insists metric is a conspiracy",
+  // interrupted cut = the insert repeatedly slams in and out of material (milling across a slot, keyway, etc.) -- loud, jarring, hard on everything involved
+  "interrupted cuts and monday mornings have a lot in common",
+  "she wanted perfect concentricity. i said define perfect",
+  "good machinists make it work, paul makes it an adventure",
+  "the drawings say 0.001. the machinist says good luck with that",
+  "i dont need the manual. i need a prayer and a dial indicator",
+  "chips everywhere is the machinists confetti",
+  "the correct tool for the job is never in the crib",
+  // ISO fit grades: tighter tolerance = smaller IT number (IT5 tighter than IT7). "upgraded" sounds like going up but you actually go down -- also lands as a plain pickup line
+  "she asked for a tighter class fit. so i upgraded my grade",
+  "another day, another hole that wasnt in the print",
+  "if it fits its right. if it doesnt, its character",
+  "first shift left it. second shift found it. third shift fixed it",
+  // sfm = surface feet per minute (cutting speed). the max rating on the insert box always seems optimistic once you're actually in the cut
+  "the manual said 300 sfm. the insert said goodbye",
+  "she said tighten up your tolerances. i said you tighten up",
+  "my chip load is aggressive, just like my personality",
+  "if it vibrates its telling you something. usually goodbye",
+  "the endmill said no more. the program said yes anyway",
+  // nominal = the nice round stated size (e.g. 1 inch), not what you actually get off the drill -- operator assumed nominal = actual
+  "nominal diameter, terrible fit, optimistic operator",
+  "she said go deeper. the z limit had other plans",
+  "a gentle touch and high rpm, thats all i ask",
+  "chatter is just the machine asking you to slow down. i dont.",
+  // H7 is a precision bore tolerance class requiring a reamer after drilling -- a drill alone can't hold it. someone thought the drill would be enough
+  "the hole spec was h7. the drill had a different opinion",
+  "high speed opinions are just as dull as high speed steel",
+  "the best coolant is the kind that keeps flowing, same with beer",
+  "they called it a feature. the customer called it wrong",
+  "she said do it in one pass. we dont talk about that part anymore",
+  "she said the finish was too rough. i said so is life",
+  "nothing humbles a machinist like a broken tap in an h7 bore",
+  "the engineer said hold 0.0005. the machinist said hold this",
+  "my collet holds tighter than my ex. both still leave marks",
+  "the g-code ran clean. the part looked like it had opinions",
+  "she asked what the chatter was about. the machine answered",
+  "paul says its close enough. paul is always wrong.",
+  // 0.004" runout is objectively bad but plenty of shops just shrug and keep running -- calling mediocrity a lifestyle is the bite
+  "4 thou of runout is not a tolerance, its a lifestyle",
+  "she said the bore was out of round. i said so was my whole morning",
+  "ran the numbers. the numbers disagreed with the part",
+  "90 percent of machining is patience. the other 10 is profanity",
+  "no such thing as too much clearance, said no one with a broken tool",
+  "tight fit, long reach, no backup plan -- typical tuesday",
+  "she said use a bigger tool. i said i am using a bigger tool",
+  "the part print was clear. the machinist read a different print",
+  "every crash is just an unplanned rapid move",
+  "its all in the wrist, whether youre tapping or lying to the boss",
+  "good chips are curly. bad chips are all over the operator",
+  "she said take it slow on entry. i said too late",
+  // peck depth = how far each drill stroke goes before retracting. too aggressive snaps the drill -- hence the language
+  "the peck depth was aggressive. so was the language after",
+  "i asked the inspector if it was good. he laughed",
+  "if the part talks back, you are in chatter or management",
+  "she wanted it honed. i said this is a machine shop, not a spa",
+  "the tolerance stack said one thing. the assembly said nope",
+  "i dont always tap blind holes. but when i do, i break the tap",
+  "paul set the tool length by feel. we felt it too.",
+  "the part was perfect until someone measured it",
+  "she said the runout was fine. she was lying",
+  "every good machinist has a story about a tap and an apology",
+  // "apology pass" is not a real G-code term -- it's the unscheduled third pass where you try to fix what the first two messed up
+  "rough pass, finishing pass, apology pass -- the usual sequence",
+  "the collet chuck is tight. unlike the tolerances after lunch",
+  "she called it a press fit. i called it not coming apart ever",
+  "when the alarm goes off it is usually pauls fault",
+  "the program was flawless. the setup was paul.",
+  "she said how did it come out. i said proudly",
+  "the part needs a second op. the second op needs a third",
+  "ran it at full feedrate. results varied. mostly downward.",
+  "the surface finish callout is optimistic at best",
+  "she said clean up your work area. i said this is the clean version",
+  "three things i hate: dull inserts, metric conversions, and mondays",
+  "the fixture was solid. the part less so.",
+  "tool life is a suggestion, not a guarantee",
+  "the endmill walked. followed by the part, the setup, and my dignity",
+  // G2/G3 = arc interpolation codes. they execute exactly as commanded, no surprises -- unlike everything else in life
+  "g2 and g3 -- the only circles i trust anymore",
+  "she said prove it. the surface plate disagreed",
+  "the best part is the one you dont have to make again",
+  "low spindle speed and high hopes -- story of my life",
+  // 125 RMS (Ra ~3.2um) is a standard as-machined finish with visible toolmarks. chrome is mirror polish. wildly different expectations
+  "she wanted chrome. i said 125 rms, take it or leave it",
+  "every tap in a blind hole is a gamble and i love to gamble",
+  "the part drawing had no tolerances. we made up our own.",
+  "she said center it better. the indicator said 0.003. we argued.",
+  "there are two types of machinists: those who crash and liars",
+  "the machine is not haunted. it just sounds that way on night shift",
+  "paul went home early. the scrap count immediately dropped.",
+  "the insert lasted 47 minutes. paul lasted less.",
+  "a good finish starts with a sharp tool and ends with lying to QC",
+  "she said are you done yet. i said define done.",
+  "every time the machine hums, something expensive is about to happen",
+  // "theoretical sharp corner" is a real standard drawing callout for the imaginary perfect edge intersection -- you can never actually make one. "ha." is the whole punchline
+  "the blueprint said theoretical sharp corner. ha.",
+  "she said work smarter not harder. the chips disagreed.",
+  "the operator error light exists for a reason. we call it paul",
+  "sometimes the best programming move is the undo button",
+  "she said is that within tolerance. i said it depends who is asking",
+  "the part is in the scrap bin. the paperwork says it shipped.",
+  "she said use the ball endmill. i had no argument with that.",
+  "face milling - when you just want to ruin everything fast",
+  "the program was named test final v3. we ran test final v7.",
+  "they said leave some material for finishing. i finished it.",
+  "she asked what the part was for. i said dont ask.",
+  "every time i say last pass, i lie",
+  "if it moves and it shouldnt, more clamps. otherwise, call paul",
+  "we call it a demo part. the customer calls it a crime scene."
+];
+// <<< SHOP_JOKES_END
+
+function writeShopJoke() {
+  if (!getProperty("writeShopJoke")) {
+    return;
+  }
+  if (typeof SHOP_JOKES != "object" || !SHOP_JOKES || !SHOP_JOKES.length) {
+    return;
+  }
+  var joke = SHOP_JOKES[Math.floor(Math.random() * SHOP_JOKES.length)];
+  if (joke) {
+    writeComment(joke);
+  }
+}
+
 function writeProgramHeader() {
   // dump machine configuration
   var vendor = machineConfiguration.getVendor();
