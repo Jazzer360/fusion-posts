@@ -1359,7 +1359,8 @@ function onOpen() {
   }
 
   writeln("O" + getProgramName());
-  writeShopJoke(); // CUSTOM: shop joke -- random ribbing in the header (pool refreshed by tools/refresh-jokes.ps1)
+  writeShopJoke();        // CUSTOM: shop joke -- random ribbing in the header (pool refreshed by tools/refresh-jokes.ps1)
+  writeAxisZeroLocations(); // CUSTOM: optional X/Y/Z zero labels directly below the joke
   writeComment(programComment);
   writeProgramHeader();
   warnMisalignedTaps(); // CUSTOM: warn on taps whose size/pitch combo isn't in the tap table
@@ -5705,6 +5706,32 @@ properties.writeShopJoke = {
   value      : true,
   scope      : "post"
 };
+// CUSTOM: axis-zero location labels -- printed in the header directly below the shop joke.
+// Leave blank to suppress that axis line entirely.
+properties.xZeroLocation = {
+  title      : "X zero location",
+  description: "Label describing the X-axis zero point (e.g. 'LEFT SIDE OF VISE'). Leave blank to omit.",
+  group      : "output",
+  type       : "string",
+  value      : "",
+  scope      : "post"
+};
+properties.yZeroLocation = {
+  title      : "Y zero location",
+  description: "Label describing the Y-axis zero point (e.g. 'FRONT JAW FACE'). Leave blank to omit.",
+  group      : "output",
+  type       : "string",
+  value      : "",
+  scope      : "post"
+};
+properties.zZeroLocation = {
+  title      : "Z zero location",
+  description: "Label describing the Z-axis zero point (e.g. 'TOP OF PART'). Leave blank to omit.",
+  group      : "output",
+  type       : "string",
+  value      : "",
+  scope      : "post"
+};
 
 // >>> SHOP_JOKES_BEGIN (rewritten by tools/refresh-jokes.ps1 -- edit the prompt there, not this array)
 var SHOP_JOKES = [
@@ -5715,7 +5742,6 @@ var SHOP_JOKES = [
   "measure twice, cuss once",
   "if it aint leaking coolant it aint trying",
   "hard jaws, soft hands, questionable decisions",
-  "nothing worse than a soft tool at critical depth",
   "the boring bar gets more action than most guys on this floor",
   "it aint the size of the tool, its how you hold it",
   "back it off and try again, works every time",
@@ -5724,20 +5750,12 @@ var SHOP_JOKES = [
   "sometimes you just gotta grab it and twist",
   "the tighter the fit the more satisfying the press",
   "full depth on the first pass, cowboy style",
-  // peck drilling = drill a short depth, retract to clear chips, re-enter, repeat -- the double entendre is built right into the cycle name
-  "pecking cycle - just keep going back for more",
   "i like my coolant like my humor - dirty and recycled",
   "the scrap bin is where good intentions go to die",
   "nice depth, shame about the finish",
-  // thread milling lets you make multiple radial passes to sneak up on final diameter -- "close" is intentional, unlike tapping where you commit all at once. riff on "...horseshoes and hand grenades"
-  "close only counts in horseshoes and thread milling",
-  "probe it before you commit, words to live by",
-  "flood coolant solves most problems, ask anyone",
-  "nobody reads the setup sheet until something breaks",
   "machinists dont retire, they just run out of feedrate",
   "experience is just scar tissue and chip burns",
   "zero your z like youre committing to the relationship",
-  "the spindle dont care about your feelings, just your rpm",
   "one day ill write an appropriate comment. today is not that day",
   "always chamfer your entry point, in machining and in life",
   "if the vise is shaking, tighten it. applies to most things",
@@ -5753,32 +5771,20 @@ var SHOP_JOKES = [
   "trust the print, verify the print, then ignore it and measure",
   "paul approved this program. all complaints go to paul",
   "dedicated to paul, who still insists metric is a conspiracy",
-  // interrupted cut = the insert repeatedly slams in and out of material (milling across a slot, keyway, etc.) -- loud, jarring, hard on everything involved
-  "interrupted cuts and monday mornings have a lot in common",
   "she wanted perfect concentricity. i said define perfect",
   "good machinists make it work, paul makes it an adventure",
   "the drawings say 0.001. the machinist says good luck with that",
   "i dont need the manual. i need a prayer and a dial indicator",
   "chips everywhere is the machinists confetti",
-  "the correct tool for the job is never in the crib",
-  // ISO fit grades: tighter tolerance = smaller IT number (IT5 tighter than IT7). "upgraded" sounds like going up but you actually go down -- also lands as a plain pickup line
-  "she asked for a tighter class fit. so i upgraded my grade",
   "another day, another hole that wasnt in the print",
   "if it fits its right. if it doesnt, its character",
-  "first shift left it. second shift found it. third shift fixed it",
-  // sfm = surface feet per minute (cutting speed). the max rating on the insert box always seems optimistic once you're actually in the cut
-  "the manual said 300 sfm. the insert said goodbye",
   "she said tighten up your tolerances. i said you tighten up",
   "my chip load is aggressive, just like my personality",
   "if it vibrates its telling you something. usually goodbye",
   "the endmill said no more. the program said yes anyway",
-  // nominal = the nice round stated size (e.g. 1 inch), not what you actually get off the drill -- operator assumed nominal = actual
-  "nominal diameter, terrible fit, optimistic operator",
   "she said go deeper. the z limit had other plans",
   "a gentle touch and high rpm, thats all i ask",
   "chatter is just the machine asking you to slow down. i dont.",
-  // H7 is a precision bore tolerance class requiring a reamer after drilling -- a drill alone can't hold it. someone thought the drill would be enough
-  "the hole spec was h7. the drill had a different opinion",
   "high speed opinions are just as dull as high speed steel",
   "the best coolant is the kind that keeps flowing, same with beer",
   "they called it a feature. the customer called it wrong",
@@ -5790,9 +5796,6 @@ var SHOP_JOKES = [
   "the g-code ran clean. the part looked like it had opinions",
   "she asked what the chatter was about. the machine answered",
   "paul says its close enough. paul is always wrong.",
-  // 0.004" runout is objectively bad but plenty of shops just shrug and keep running -- calling mediocrity a lifestyle is the bite
-  "4 thou of runout is not a tolerance, its a lifestyle",
-  "she said the bore was out of round. i said so was my whole morning",
   "ran the numbers. the numbers disagreed with the part",
   "90 percent of machining is patience. the other 10 is profanity",
   "no such thing as too much clearance, said no one with a broken tool",
@@ -5814,8 +5817,6 @@ var SHOP_JOKES = [
   "the part was perfect until someone measured it",
   "she said the runout was fine. she was lying",
   "every good machinist has a story about a tap and an apology",
-  // "apology pass" is not a real G-code term -- it's the unscheduled third pass where you try to fix what the first two messed up
-  "rough pass, finishing pass, apology pass -- the usual sequence",
   "the collet chuck is tight. unlike the tolerances after lunch",
   "she called it a press fit. i called it not coming apart ever",
   "when the alarm goes off it is usually pauls fault",
@@ -5829,13 +5830,8 @@ var SHOP_JOKES = [
   "the fixture was solid. the part less so.",
   "tool life is a suggestion, not a guarantee",
   "the endmill walked. followed by the part, the setup, and my dignity",
-  // G2/G3 = arc interpolation codes. they execute exactly as commanded, no surprises -- unlike everything else in life
-  "g2 and g3 -- the only circles i trust anymore",
   "she said prove it. the surface plate disagreed",
   "the best part is the one you dont have to make again",
-  "low spindle speed and high hopes -- story of my life",
-  // 125 RMS (Ra ~3.2um) is a standard as-machined finish with visible toolmarks. chrome is mirror polish. wildly different expectations
-  "she wanted chrome. i said 125 rms, take it or leave it",
   "every tap in a blind hole is a gamble and i love to gamble",
   "the part drawing had no tolerances. we made up our own.",
   "she said center it better. the indicator said 0.003. we argued.",
@@ -5846,8 +5842,6 @@ var SHOP_JOKES = [
   "a good finish starts with a sharp tool and ends with lying to QC",
   "she said are you done yet. i said define done.",
   "every time the machine hums, something expensive is about to happen",
-  // "theoretical sharp corner" is a real standard drawing callout for the imaginary perfect edge intersection -- you can never actually make one. "ha." is the whole punchline
-  "the blueprint said theoretical sharp corner. ha.",
   "she said work smarter not harder. the chips disagreed.",
   "the operator error light exists for a reason. we call it paul",
   "sometimes the best programming move is the undo button",
@@ -5855,7 +5849,6 @@ var SHOP_JOKES = [
   "the part is in the scrap bin. the paperwork says it shipped.",
   "she said use the ball endmill. i had no argument with that.",
   "face milling - when you just want to ruin everything fast",
-  "the program was named test final v3. we ran test final v7.",
   "they said leave some material for finishing. i finished it.",
   "she asked what the part was for. i said dont ask.",
   "every time i say last pass, i lie",
@@ -5863,6 +5856,20 @@ var SHOP_JOKES = [
   "we call it a demo part. the customer calls it a crime scene."
 ];
 // <<< SHOP_JOKES_END
+
+function writeAxisZeroLocations() {
+  var axes = [
+    {label: "X", prop: "xZeroLocation"},
+    {label: "Y", prop: "yZeroLocation"},
+    {label: "Z", prop: "zZeroLocation"}
+  ];
+  for (var i = 0; i < axes.length; ++i) {
+    var val = String(getProperty(axes[i].prop)).trim();
+    if (val) {
+      writeComment(axes[i].label + ": " + val);
+    }
+  }
+}
 
 function writeShopJoke() {
   if (!getProperty("writeShopJoke")) {
