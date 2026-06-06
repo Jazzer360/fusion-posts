@@ -33,7 +33,7 @@ extension = "MIN";
 setCodePage("ascii");
 
 capabilities = CAPABILITY_MILLING | CAPABILITY_MACHINE_SIMULATION;
-tolerance = spatial(0.002, MM);
+tolerance = spatial(0.0001, IN);
 if (typeof revision == "number" && typeof supportedFeatures != "undefined") {
   supportedFeatures |= revision >= 50328 ? FEATURE_MACHINE_ROTARY_ANGLES : 0;
 }
@@ -275,7 +275,6 @@ properties = {
     value      : true,
     scope      : "post"
   },
-
   // ---- Cycles & Smoothing ----
   useG284: {
     title      : "Use G284",
@@ -590,7 +589,7 @@ properties = {
     description: "Prefixes the G118 tool break-check blocks with a slash (/) so they can be toggled with the control's block-skip switch. Useful to run break checks during attended operation and skip them when running unattended. The break check itself is still enabled per-tool by the tool's 'break control' setting.",
     group      : "blockSkip",
     type       : "boolean",
-    value      : false,
+    value      : true,
     scope      : "post"
   }
 };
@@ -1362,6 +1361,7 @@ function onOpen() {
   writeln("O" + getProgramName());
   writeComment(programComment);
   writeProgramHeader();
+  warnMisalignedTaps(); // CUSTOM: warn on taps whose size/pitch combo isn't in the tap table
   writeToolCheckStart();
 
   if (typeof inspectionWriteVariables == "function") {
@@ -1634,6 +1634,60 @@ function getFriendlyTapSize(table, targetDiameter, targetPitch) {
     }
   }
   return null;
+}
+
+// CUSTOM: tap tool-table alignment check. A mis-programmed tap (a thread pitch / TPI
+// that doesn't belong to its diameter) won't resolve to a friendly name, so the size
+// confirmation silently disappears from the header comment. This returns a descriptive
+// warning string for such a tap, or null when its diameter/pitch combo is in the table.
+function getTapMismatchWarning(tool) {
+  var table = sizeTables.tap;
+  if (!table || table.length === 0) return null;
+  var targetDiameter = tool.diameter;
+  var targetPitch = tool.getThreadPitch();
+  if (targetPitch <= 0) return null; // no usable pitch to validate against
+
+  // If it already resolves to a friendly name, the size/pitch combo is valid.
+  if (getFriendlyTapSize(table, targetDiameter, targetPitch)) return null;
+
+  var diamKey = (unit == MM) ? "mm" : "inch";
+  var diamTolerance = Math.max(targetDiameter * 0.005, (unit == MM) ? 0.005 : 0.0002);
+
+  // Collect the standard pitches the tap table offers at this diameter (if any).
+  var expected = [];
+  for (var i = 0; i < table.length; i++) {
+    if (Math.abs(targetDiameter - table[i][diamKey]) > diamTolerance) continue;
+    expected.push((unit == MM)
+      ? ("P" + table[i].pitch + " (" + table[i].name + ")")
+      : (table[i].tpi + " TPI (" + table[i].name + ")"));
+  }
+
+  var tStr = "T" + toolFormat.format(tool.number);
+  var diaStr = formatSizeDecimal(targetDiameter);
+  var pitchStr = (unit == MM)
+    ? ("P" + (Math.round(targetPitch * 1000) / 1000))
+    : (Math.round(1.0 / targetPitch) + " TPI");
+
+  if (expected.length > 0) {
+    return subst(localize("Tap %1 (dia %2): programmed pitch %3 does not match the tap table for this diameter. Expected %4. Verify the tool definition."),
+      tStr, diaStr, pitchStr, expected.join(", "));
+  }
+  return subst(localize("Tap %1 (dia %2, pitch %3) does not match any entry in the tap table. Verify the tool definition."),
+    tStr, diaStr, pitchStr);
+}
+
+// CUSTOM: scan every tap used in the program once (from onOpen) and warn on any whose
+// diameter/pitch combo is absent from the tap table.
+function warnMisalignedTaps() {
+  var tools = getToolTable();
+  for (var i = 0; i < tools.getNumberOfTools(); ++i) {
+    var tool = tools.getTool(i);
+    if (tool.type != TOOL_TAP_RIGHT_HAND && tool.type != TOOL_TAP_LEFT_HAND) continue;
+    var msg = getTapMismatchWarning(tool);
+    if (msg) {
+      warning(msg);
+    }
+  }
 }
 
 // Formats a size value with xyzFormat but guarantees at least one decimal place.

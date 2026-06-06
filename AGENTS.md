@@ -165,6 +165,11 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - Caveat: any path that emits an absolute block (e.g. `writeRetract` with `G90 G53`) inside the subprogram body will fight the incremental output formats. Pattern subprograms are not expected to contain mid-body retracts, but verify on first use.
   - Marker comment: `// CUSTOM: reuse multi-WCS subprograms` (property definition + the bypass branch in `subprogramIsValid`).
 
+- **Warn on tap size/pitch mismatch.**
+  - Always-on (no property). `warnMisalignedTaps()` is called from `onOpen` immediately after `writeProgramHeader()`. It scans `getToolTable()` once, and for each `TOOL_TAP_RIGHT_HAND` / `TOOL_TAP_LEFT_HAND` calls `getTapMismatchWarning(tool)`. That helper returns `null` when `getFriendlyTapSize` already resolves the tap (combo is valid), otherwise builds a message: if the tap table has entries at the tap's diameter it lists the expected pitches/TPI (e.g. "Expected 20 TPI (1/4-20), 28 TPI (1/4-28)"); if no diameter match exists it reports the diameter/pitch as simply absent from the table. Unit-aware (TPI in inch mode, `P<pitch>` in mm mode). Warnings go to the post log only - NC output is unchanged.
+  - Both helpers (`getTapMismatchWarning`, `warnMisalignedTaps`) live just below `getFriendlyTapSize`; they reuse `sizeTables.tap`, `formatSizeDecimal`, and `toolFormat`.
+  - Marker comment: `// CUSTOM: warn on taps whose size/pitch combo isn't in the tap table` (the `onOpen` call site), `// CUSTOM: tap tool-table alignment check` (on `getTapMismatchWarning`), `// CUSTOM: scan every tap used in the program once` (on `warnMisalignedTaps`).
+
 
 ---
 
