@@ -57,51 +57,57 @@ probeMultipleFeatures = true;
 // here. If the running Fusion version doesn't honor groupDefinitions, the
 // properties still work -- only the sidebar grouping is affected.
 groupDefinitions = {
+  // CUSTOM: program zero labels -- shown first so they're easy to fill in per-job.
+  programZero: {
+    title      : "Program Zero",
+    description: "Labels describing the X, Y, and Z axis zero points. Printed in the program header for quick reference at the control.",
+    order      : 0
+  },
   machine: {
     title      : "Machine Configuration",
     description: "Physical capabilities of the machine: rotary table axis, chip conveyor. Usually set once per machine.",
-    order      : 0
+    order      : 1
   },
   homePositions: {
     title      : "Home & Retract Positions",
     description: "Retract method, XY-home behavior on indexing, and secondary-home (G30 P<n>) options for program stops and program end.",
-    order      : 1
+    order      : 2
   },
   tool: {
     title      : "Tool & Spindle",
     description: "Tool change behavior, length/diameter offset codes, tool-life and spindle-load monitoring, and spindle-stop dwell.",
-    order      : 2
+    order      : 3
   },
   cycles: {
     title      : "Cycles & Smoothing",
     description: "Tapping cycle selection and High-Cut / superNURBS contouring smoothing.",
-    order      : 3
+    order      : 4
   },
   multiAxis: {
     title      : "Multi-Axis",
     description: "Tilted work plane method, rotary direction/clamp codes, multi-axis indexing, and 5-axis controls (CAS, TPOC, ball-end-mill center).",
-    order      : 4
+    order      : 5
   },
   tombstone: {
     title      : "Tombstone & Pattern Reuse",
     description: "Rotary-tombstone WCS spacing/offset and multi-WCS pattern subprogram reuse.",
-    order      : 5
+    order      : 6
   },
   // CUSTOM: APC (automatic pallet changer) operating modes.
   pallets: {
     title      : "Pallet Changing (APC)",
     description: "2-pallet APC operating mode: single-pallet load/unload or continuous lights-out cycling with incremented work offsets.",
-    order      : 6
+    order      : 7
   },
   probing: {
     title      : "Probing",
     description: "Probing macro selection (Renishaw O9901 vs stock Okuma) and inspection results-file behavior.",
-    order      : 7
+    order      : 8
   },
   programBehavior: {
     title      : "Program Behavior",
     description: "Optional stops and subroutine-style program output.",
-    order      : 8
+    order      : 9
   },
   // CUSTOM: per-feature block-skip ("/") toggles. Each property in this group
   // makes a particular block of output optional by prefixing it with a slash so
@@ -110,12 +116,12 @@ groupDefinitions = {
   blockSkip: {
     title      : "Block Skip (Optional Blocks)",
     description: "Prefix selected blocks with a slash (/) so they can be toggled on/off at the control's block-skip switch. Useful for code that should run during attended operation but be skippable when running unattended.",
-    order      : 9
+    order      : 10
   },
   output: {
     title      : "Program Output & Formatting",
     description: "Sequence numbers, word spacing, and operation notes.",
-    order      : 10
+    order      : 11
   }
 };
 
@@ -302,6 +308,14 @@ properties = {
   useSmoothingNURBS: {
     title      : "Enable superNURBS smoothing",
     description: "Enable to output smoothing blocks using the expanded superNURBS capabilities.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  useParametricFeed: {
+    title      : "Parametric feed",
+    description: "Specifies that the feedrates should be output using parameters.",
     group      : "cycles",
     type       : "boolean",
     value      : false,
@@ -531,6 +545,30 @@ properties = {
     value      : "SSB",
     scope      : "post"
   },
+  useSubroutines: {
+    title      : "Use subroutines",
+    description: "Select your desired subroutine option. 'All Operations' creates subroutines per each operation, 'Cycles' creates subroutines for cycle operations on same holes, and 'Patterns' creates subroutines for patterned operations.",
+    group      : "programBehavior",
+    type       : "enum",
+    values     : [
+      {title:"No", id:"none"},
+      {title:"All Operations", id:"allOperations"},
+      {title:"All Operations & Patterns", id:"allPatterns"},
+      {title:"Cycles", id:"cycles"},
+      {title:"Operations, Patterns, Cycles", id:"all"},
+      {title:"Patterns", id:"patterns"}
+    ],
+    value: "allPatterns",
+    scope: "post"
+  },
+  useFilesForSubprograms: {
+    title      : "Use files for subroutines",
+    description: "If enabled, subroutines will be saved as individual files.",
+    group      : "programBehavior",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
 
   // ---- Program Output & Formatting ----
   showSequenceNumbers: {
@@ -578,6 +616,44 @@ properties = {
     value      : false,
     scope      : "post"
   },
+  writeMachine: {
+    title      : "Write machine",
+    description: "Output the machine settings in the header of the program.",
+    group      : "output",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  writeTools: {
+    title      : "Write tool list",
+    description: "Output a tool list in the header of the program.",
+    group      : "output",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
+  // CUSTOM: when enabled, flood coolant (M8) also fires mist (M125) -- workaround for
+  // machines whose coolant plumbing routes mist through the flood circuit.
+  floodIncludesMist: {
+    title      : "Flood includes mist",
+    description: "When enabled, any flood coolant call also outputs M125 (mist). Use when the machine's flood and mist share a circuit.",
+    group      : "output",
+    type       : "boolean",
+    value      : false,
+    scope      : ["post", "machine"]
+  },
+  // CUSTOM: shop joke -- emit one random joke as a header comment. The post engine
+  // sandbox blocks all network access, so the actual Gemini Flash call lives in
+  // tools/refresh-jokes.ps1. That script rewrites the SHOP_JOKES array in place;
+  // do not hand-edit the array -- tweak the prompt in the script instead.
+  writeShopJoke: {
+    title      : "Write shop joke",
+    description: "Print one random joke from the refreshable pool in the program header.",
+    group      : "output",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
 
   // ---- Block Skip (Optional Blocks) ----
   // CUSTOM: each boolean here makes one feature's output blocks optional by
@@ -590,6 +666,34 @@ properties = {
     group      : "blockSkip",
     type       : "boolean",
     value      : true,
+    scope      : "post"
+  },
+
+  // ---- Program Zero ----
+  // CUSTOM: axis-zero location labels -- printed in the header directly below the shop joke.
+  // Leave blank to suppress that axis line entirely.
+  xZeroLocation: {
+    title      : "X zero location",
+    description: "Label describing the X-axis zero point (e.g. 'LEFT SIDE OF VISE'). Leave blank to omit.",
+    group      : "programZero",
+    type       : "string",
+    value      : "",
+    scope      : "post"
+  },
+  yZeroLocation: {
+    title      : "Y zero location",
+    description: "Label describing the Y-axis zero point (e.g. 'FRONT JAW FACE'). Leave blank to omit.",
+    group      : "programZero",
+    type       : "string",
+    value      : "",
+    scope      : "post"
+  },
+  zZeroLocation: {
+    title      : "Z zero location",
+    description: "Label describing the Z-axis zero point (e.g. 'TOP OF PART'). Leave blank to omit.",
+    group      : "programZero",
+    type       : "string",
+    value      : "",
     scope      : "post"
   }
 };
@@ -1755,12 +1859,14 @@ function getToolComponents(tool) {
 
   var decimal = formatSizeDecimal(tool.diameter);
 
-  // Display type name — abbreviate tap handedness for brevity
+  // Display type name — abbreviate tap handedness for brevity; rename Form Mill
   var typeName;
   if (t == TOOL_TAP_RIGHT_HAND) {
     typeName = "Tap RH";
   } else if (t == TOOL_TAP_LEFT_HAND) {
     typeName = "Tap LH";
+  } else if (t == TOOL_MILLING_FORM) {
+    typeName = "Specialty Mill";
   } else {
     typeName = toTitleCase(getToolTypeName(t));
   }
@@ -5311,14 +5417,6 @@ function startSpindle(tool, insertToolCall) {
 }
 // <<<<< INCLUDED FROM include_files/startSpindle.cpi
 // >>>>> INCLUDED FROM include_files/parametricFeeds.cpi
-properties.useParametricFeed = {
-  title      : "Parametric feed",
-  description: "Specifies that the feedrates should be output using parameters.",
-  group      : "cycles", // CUSTOM: re-grouped (was "preferences") to match the new groupDefinitions layout
-  type       : "boolean",
-  value      : false,
-  scope      : "post"
-};
 var activeMovements;
 var currentFeedId;
 validate(settings.parametricFeeds, "Setting 'parametricFeeds' is required but not defined.");
@@ -5688,75 +5786,6 @@ function initializeSmoothing(_section) {
 }
 // <<<<< INCLUDED FROM include_files/smoothing.cpi
 // >>>>> INCLUDED FROM include_files/writeProgramHeader.cpi
-properties.writeMachine = {
-  title      : "Write machine",
-  description: "Output the machine settings in the header of the program.",
-  group      : "output", // CUSTOM: re-grouped (was "formats") to match the new groupDefinitions layout
-  type       : "boolean",
-  value      : true,
-  scope      : "post"
-};
-properties.writeTools = {
-  title      : "Write tool list",
-  description: "Output a tool list in the header of the program.",
-  group      : "output", // CUSTOM: re-grouped (was "formats") to match the new groupDefinitions layout
-  type       : "boolean",
-  value      : true,
-  scope      : "post"
-};
-// CUSTOM: shop joke -- emit one random joke as a header comment.
-// IMPORTANT: the post engine is sandboxed (no network, no file reads), so the
-// actual Gemini Flash call lives in tools/refresh-jokes.ps1. That script
-// rewrites the SHOP_JOKES array below in place; do not hand-edit the array
-// (your edits get clobbered on the next refresh) -- tweak the prompt in the
-// script instead. The post just picks one entry at random at post time.
-// formatComment() filters to permittedCommentChars and clips to 80 chars, so
-// odd punctuation/length is handled automatically.
-// CUSTOM: when enabled, flood coolant (M8) also fires mist (M125) -- workaround for
-// machines whose coolant plumbing routes mist through the flood circuit.
-properties.floodIncludesMist = {
-  title      : "Flood includes mist",
-  description: "When enabled, any flood coolant call also outputs M125 (mist). Use when the machine's flood and mist share a circuit.",
-  group      : "output",
-  type       : "boolean",
-  value      : false,
-  scope      : ["post", "machine"]
-};
-properties.writeShopJoke = {
-  title      : "Write shop joke",
-  description: "Print one random joke from the refreshable pool in the program header.",
-  group      : "output",
-  type       : "boolean",
-  value      : true,
-  scope      : "post"
-};
-// CUSTOM: axis-zero location labels -- printed in the header directly below the shop joke.
-// Leave blank to suppress that axis line entirely.
-properties.xZeroLocation = {
-  title      : "X zero location",
-  description: "Label describing the X-axis zero point (e.g. 'LEFT SIDE OF VISE'). Leave blank to omit.",
-  group      : "output",
-  type       : "string",
-  value      : "",
-  scope      : "post"
-};
-properties.yZeroLocation = {
-  title      : "Y zero location",
-  description: "Label describing the Y-axis zero point (e.g. 'FRONT JAW FACE'). Leave blank to omit.",
-  group      : "output",
-  type       : "string",
-  value      : "",
-  scope      : "post"
-};
-properties.zZeroLocation = {
-  title      : "Z zero location",
-  description: "Label describing the Z-axis zero point (e.g. 'TOP OF PART'). Leave blank to omit.",
-  group      : "output",
-  type       : "string",
-  value      : "",
-  scope      : "post"
-};
-
 // >>> SHOP_JOKES_BEGIN (rewritten by tools/refresh-jokes.ps1 -- edit the prompt there, not this array)
 var SHOP_JOKES = [
   "tight tolerances and loose morals -- the shop motto",
@@ -5893,6 +5922,7 @@ function writeAxisZeroLocations() {
       writeComment(axes[i].label + ": " + val);
     }
   }
+  writeln("");
 }
 
 function writeShopJoke() {
@@ -5904,8 +5934,29 @@ function writeShopJoke() {
   }
   var joke = SHOP_JOKES[Math.floor(Math.random() * SHOP_JOKES.length)];
   if (joke) {
+    writeln("");
     writeComment(joke);
+    writeln("");
   }
+}
+
+// CUSTOM: numeric sort key for tool-list grouping (lower = earlier in header).
+// Within each group tools are further sorted by tool number.
+function getToolTypeSortKey(t) {
+  if (t == TOOL_MILLING_END_FLAT || t == TOOL_MILLING_END_BALL || t == TOOL_MILLING_END_BULLNOSE) { return 0; } // general end mills
+  if (t == TOOL_MILLING_FACE)                                                                       { return 1; } // face mills
+  if (t == TOOL_MILLING_SLOT   || t == TOOL_MILLING_RADIUS  || t == TOOL_MILLING_CHAMFER ||
+      t == TOOL_MILLING_DOVETAIL || t == TOOL_MILLING_TAPERED || t == TOOL_MILLING_LOLLIPOP ||
+      t == TOOL_MILLING_FORM   || t == TOOL_MILLING_THREAD)                                        { return 2; } // specialty mills
+  if (t == TOOL_DRILL || t == TOOL_DRILL_SPOT || t == TOOL_DRILL_CENTER || t == TOOL_DRILL_BLOCK)  { return 3; } // drills
+  if (t == TOOL_COUNTER_BORE)                                                                       { return 4; } // counterbores
+  if (t == TOOL_COUNTER_SINK)                                                                       { return 5; } // countersinks
+  if (t == TOOL_TAP_RIGHT_HAND)                                                                     { return 6; } // taps RH
+  if (t == TOOL_TAP_LEFT_HAND)                                                                      { return 7; } // taps LH
+  if (t == TOOL_REAMER)                                                                             { return 8; } // reamers
+  if (t == TOOL_BORING_BAR)                                                                         { return 9; } // boring bars
+  if (t == TOOL_PROBE)                                                                              { return 10; } // probes
+  return 11;
 }
 
 function writeProgramHeader() {
@@ -5924,10 +5975,12 @@ function writeProgramHeader() {
     if (mDescription) {
       writeComment("  " + localize("description") + ": " + mDescription);
     }
+    writeln("");
   }
 
   // dump tool information
   if (getProperty("writeTools")) {
+    writeComment("Tools");
     var zRanges = {};
     if (is3D()) {
       var numberOfSections = getNumberOfSections();
@@ -5944,11 +5997,18 @@ function writeProgramHeader() {
     }
     var tools = getToolTable();
     if (tools.getNumberOfTools() > 0) {
+      // CUSTOM: sort by type group then by tool number before building the header.
+      var toolArray = [];
+      for (var i = 0; i < tools.getNumberOfTools(); ++i) { toolArray.push(tools.getTool(i)); }
+      toolArray.sort(function(a, b) {
+        var ka = getToolTypeSortKey(a.type), kb = getToolTypeSortKey(b.type);
+        return (ka != kb) ? (ka - kb) : (a.diameter - b.diameter);
+      });
       // First pass: collect components and compute column widths for alignment.
       var rows = [];
       var w = [0, 0, 0, 0]; // tStr, friendly|decimal, [decimal], typeName
-      for (var i = 0; i < tools.getNumberOfTools(); ++i) {
-        var tool = tools.getTool(i);
+      for (var i = 0; i < toolArray.length; ++i) {
+        var tool = toolArray[i];
         var c = getToolComponents(tool);
         var col0 = c.tStr;
         var col1 = c.friendly || "";
@@ -5972,35 +6032,11 @@ function writeProgramHeader() {
         writeComment(line.replace(/ +$/, ""));
       }
     }
+    writeln("");
   }
 }
 // <<<<< INCLUDED FROM include_files/writeProgramHeader.cpi
 // >>>>> INCLUDED FROM include_files/subprograms.cpi
-properties.useSubroutines = {
-  title      : "Use subroutines",
-  description: "Select your desired subroutine option. 'All Operations' creates subroutines per each operation, 'Cycles' creates subroutines for cycle operations on same holes, and 'Patterns' creates subroutines for patterned operations.",
-  group      : "programBehavior", // CUSTOM: re-grouped (was "preferences") to match the new groupDefinitions layout
-  type       : "enum",
-  values     : [
-    {title:"No", id:"none"},
-    {title:"All Operations", id:"allOperations"},
-    {title:"All Operations & Patterns", id:"allPatterns"},
-    {title:"Cycles", id:"cycles"},
-    {title:"Operations, Patterns, Cycles", id:"all"},
-    {title:"Patterns", id:"patterns"}
-  ],
-  value: "allPatterns",
-  scope: "post"
-};
-properties.useFilesForSubprograms = {
-  title      : "Use files for subroutines",
-  description: "If enabled, subroutines will be saved as individual files.",
-  group      : "programBehavior", // CUSTOM: re-grouped (was "preferences") to match the new groupDefinitions layout
-  type       : "boolean",
-  value      : false,
-  scope      : "post"
-};
-
 var NONE = 0x0000;
 var PATTERNS = 0x0001;
 var CYCLES = 0x0010;
