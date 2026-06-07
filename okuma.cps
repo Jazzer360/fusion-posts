@@ -3088,8 +3088,18 @@ function applyMaxSpindleRPM(rpm) {
   return effective;
 }
 
+// CUSTOM: SFM comment -- returns a formatted "(SFM: <n>)" comment for the spindle speed
+// line, converting tool.diameter to inches if the post is running in MM mode.
+// Returns "" when diameter is zero (e.g. chamfer/engrave) or RPM is zero.
+function getSpindleSFMComment(rpm) {
+  var effRPM = getEffectiveSpindleRPM(rpm);
+  if (!tool || tool.diameter <= 0 || effRPM <= 0) { return ""; }
+  var diaInch = (unit == MM) ? tool.diameter / 25.4 : tool.diameter;
+  return formatComment("SFM: " + Math.round(Math.PI * diaInch * effRPM / 12));
+}
+
 function onSpindleSpeed(spindleSpeed) {
-  writeBlock(sOutput.format(applyMaxSpindleRPM(spindleSpeed)));
+  writeBlock(sOutput.format(applyMaxSpindleRPM(spindleSpeed)), getSpindleSFMComment(spindleSpeed));
 }
 
 // CUSTOM: feed per rev - called by Fusion when feed mode changes (e.g. entering a per-rev drilling section);
@@ -4050,7 +4060,8 @@ function onCommand(command) {
     writeBlock(
       sOutput.format(applyMaxSpindleRPM(spindleSpeed)),
       mFormat.format(tool.clockwise ? M.SPINDLE_CW : M.SPINDLE_CCW),
-      conditional(spindleConfirmPending, mFormat.format(M.SPINDLE_NO_WAIT))
+      conditional(spindleConfirmPending, mFormat.format(M.SPINDLE_NO_WAIT)),
+      getSpindleSFMComment(spindleSpeed)
     );
     return;
   case COMMAND_STOP_SPINDLE:
