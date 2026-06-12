@@ -3274,10 +3274,8 @@ function writeDrillCycle(cycle, x, y, z) {
       if (!F) { F = tool.getTappingFeedrate(); }
       emitCanned((tool.type == TOOL_TAP_LEFT_HAND ? G.CYCLE_TAP_CHIP_LH : G.CYCLE_TAP_CHIP), 0, g71, cc(), [
         conditional(P > 0, "P" + secFormat.format(P / 1000.0)),
-        // Q takes priority over I/J, so only use Q for plain pecking; switch to I + J when an accumulated depth is in effect
-        conditional(cycle.accumulatedDepth >= cycle.depth, "Q" + xyzFormat.format(cycle.incrementalDepth)), // cutting depth per peck
-        conditional(cycle.accumulatedDepth < cycle.depth, "I" + xyzFormat.format(cycle.incrementalDepth)), // cutting depth per peck
-        conditional(cycle.accumulatedDepth < cycle.depth, "J" + xyzFormat.format(cycle.accumulatedDepth)), // tool tip drawing (accumulated) amount
+        "I" + xyzFormat.format(cycle.incrementalDepth), // cutting depth per peck
+        "J" + xyzFormat.format(cycle.accumulatedDepth), // accumulated depth (J=0 treated same as J=I by control)
         "K" + xyzFormat.format(cycle.chipBreakDistance), // retract amount
         "F" + pitchFormat.format(_perRev ? tool.getThreadPitch() : F), // for G95 F is pitch, for G94 F is pitch*spindle rpm
         sOutput.format(applyMaxSpindleRPM(spindleSpeed)),
