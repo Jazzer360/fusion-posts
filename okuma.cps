@@ -263,6 +263,15 @@ properties = {
     value      : 0,
     scope      : "post"
   },
+  // CUSTOM: G118 tool break check Z height - see writeBreakControl().
+  breakControlZ: {
+    title      : "Tool break check Z height",
+    description: "Z value used for the G118 tool break check, output for tools with 'break control' enabled.",
+    group      : "tool",
+    type       : "number",
+    value      : 0.005,
+    scope      : "post"
+  },
   // CUSTOM: machine max spindle RPM - caps spindle speed and scales G94 feedrates
   maximumSpindleRPM: {
     title      : "Maximum spindle RPM",
@@ -1415,7 +1424,7 @@ function buildPatternIndex() {
 }
 
 function onOpen() {
-  circularOutputAccuracy = xyzFormat.getNumberOfDecimals();
+  // circularOutputAccuracy = xyzFormat.getNumberOfDecimals();
   buildPatternIndex();
   // define and enable machine configuration
   receivedMachineConfiguration = machineConfiguration.isReceived();
@@ -4206,7 +4215,7 @@ function writeBreakControl(checkTool) {
   }
   writeComment("BREAK CONTROL T" + toolFormat.format(checkTool.number));
   withBlockSkip("blockSkipBreakControl", function () {
-    writeBlock(gFormat.format(118), "X0", "Y0", "S0", "Z0.01"); // G118 tool break check
+    writeBlock(gFormat.format(118), "X0", "Y0", "S0", "Z" + xyzFormat.format(toPreciseUnit(getProperty("breakControlZ"), IN))); // G118 tool break check
   });
 }
 
