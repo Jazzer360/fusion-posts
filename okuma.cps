@@ -1319,9 +1319,9 @@ function wcsH(n) {
 }
 function wcsPH(n) {
   if (palletCapturing) {
-    return "PH=" + PALLET_WCS_SENTINEL + n + PALLET_WCS_SENTINEL;
+    return "HH=" + PALLET_WCS_SENTINEL + n + PALLET_WCS_SENTINEL;
   }
-  return "PH=" + xyzFormat.format(n);
+  return "HH=" + xyzFormat.format(n);
 }
 
 // Replaces every sentinel-wrapped WCS number in a captured body with the number
@@ -2727,12 +2727,13 @@ function writeFixtureOffset(abc, reset) {
     var pZ = reset ? 0 : currentSection.workOrigin.z
     writeBlock(
       "CALL OO88",
-      conditional((pX != 0), "PX=" + xyzFormat.format(pX)),
-      conditional((pY != 0), "PY=" + xyzFormat.format(pY)),
-      conditional((pZ != 0), "PZ=" + xyzFormat.format(pZ)),
-      conditional(machineConfiguration.isMachineCoordinate(2), "PC=" + abcFormat.format(oo88Abc.z)),
-      conditional(machineConfiguration.isMachineCoordinate(1), "PB=" + abcFormat.format(oo88Abc.y)),
-      conditional(machineConfiguration.isMachineCoordinate(0), "PA=" + abcFormat.format(oo88Abc.x)),
+      "XX=" + xyzFormat.format(pX),
+      "YY=" + xyzFormat.format(pY),
+      "ZZ=" + xyzFormat.format(pZ),
+      conditional(machineConfiguration.isMachineCoordinate(2), "CC=" + abcFormat.format(oo88Abc.z)),
+      conditional(machineConfiguration.isMachineCoordinate(1), "BB=" + abcFormat.format(oo88Abc.y)),
+      conditional(machineConfiguration.isMachineCoordinate(0), "AA=" + abcFormat.format(oo88Abc.x)),
+      "SBB=0",
       wcsPH(currentSection.workOffset), // CUSTOM: tokenized for Continuous-pallet WCS increment
       "PP=" + xyzFormat.format(fixtureOffsetWCS) // reserved fixture offset - never incremented
     );
