@@ -299,6 +299,15 @@ properties = {
     value      : true,
     scope      : "post"
   },
+  // CUSTOM: use rapid traverse for the intermediate break-through retract.
+  rapidBreakThroughRetract: {
+    title      : "Rapid break-through retract",
+    description: "When enabled, retracts from the bottom of a break-through drilling cycle to the retract plane use G0 instead of the cycle retract feedrate.",
+    group      : "cycles",
+    type       : "boolean",
+    value      : true,
+    scope      : "post"
+  },
   useSmoothing: {
     title      : "High-Cut mode",
     description: "Select the High-cut contouring mode.",
@@ -3876,6 +3885,16 @@ function onLinear(_x, _y, _z, feed) {
   var y = yOutput.format(_y);
   var z = zOutput.format(_z);
   if (x || y || z) {
+    // CUSTOM: rapid retract for break-through drilling. Fusion expands this
+    // cycle as a linear move to cycle.retract followed by a rapid move to
+    // cycle.clearance; only replace the feed-rate-controlled move.
+    if (getProperty("rapidBreakThroughRetract") && cycleExpanded &&
+        cycleType == "break-through-drilling" &&
+        !xyzFormat.areDifferent(_z, cycle.retract)) {
+      writeBlock(gMotionModal.format(G.RAPID), x, y, z);
+      forceFeed();
+      return;
+    }
     if (pendingRadiusCompensation >= 0) {
       pendingRadiusCompensation = -1;
       writeBlock(gPlaneModal.format(G.PLANE_XY));
