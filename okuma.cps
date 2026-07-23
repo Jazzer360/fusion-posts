@@ -3889,7 +3889,7 @@ function onLinear(_x, _y, _z, feed) {
     // cycle as a linear move to cycle.retract followed by a rapid move to
     // cycle.clearance; only replace the feed-rate-controlled move.
     if (getProperty("rapidBreakThroughRetract") && cycleExpanded &&
-        cycleType == "break-through-drilling" &&
+        typeof cycleType != "undefined" && cycleType == "break-through-drilling" &&
         !xyzFormat.areDifferent(_z, cycle.retract)) {
       writeBlock(gMotionModal.format(G.RAPID), x, y, z);
       forceFeed();
