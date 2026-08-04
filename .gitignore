@@ -30,3 +30,5 @@ Desktop.ini
 *.pdf
 
 node_modules/*
+
+/.post-harness
