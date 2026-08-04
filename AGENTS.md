@@ -75,7 +75,7 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
   - The stock post lumped most properties under generic groups (`preferences` / `configuration` / `formats` / `multiAxis`) with no display titles or ordering, so Fusion sorted them alphabetically and labeled them with the raw keys. The properties block is now reorganized into nine cohesive groups, displayed in the order below; the new top-level `groupDefinitions = { ... }` block (added immediately above `properties = { ... }`) controls each group's title, description, and `order` index. Property *definitions* inside the main `properties = { ... }` literal are reordered to match the same group sequence so the file reads top-to-bottom in display order. All property keys and types are unchanged -- only `group:` values and definition position were touched, so `getProperty("name")` callers and any saved Fusion configurations keep working.
   - Group keys → display titles → property keys (in display order):
     1. `machine` "Machine Configuration": `rotaryTableAxis`, `useChipConveyor`.
-    2. `homePositions` "Home & Retract Positions": `safePositionMethod`, `forceHomeOnIndexing`, `gotoSecondaryHomeAtEnd`, `gotoSecondaryHomeAtStop`, `secondaryHomePositionNumber`.
+    2. `homePositions` "Home & Retract Positions": `safePositionMethod`, `forceHomeOnIndexing`, `useClearanceHeightBetweenWCS`, `gotoSecondaryHomeAtEnd`, `gotoSecondaryHomeAtStop`, `secondaryHomePositionNumber`.
     3. `tool` "Tool & Spindle": `preloadTool`, `safeToolChange`, `offsetCode`, `toolLifeMonitor`, `loadMonitorVal`, `dwellAfterStop`.
     4. `cycles` "Cycles & Smoothing": `useG284`, `useSmoothing`, `useSmoothingNURBS` (plus the injected `useParametricFeed` from `parametricFeeds.cpi`).
     5. `multiAxis` "Multi-Axis": `useTableDirectionCodes`, `tiltedWorkPlaneMethod`, `fixtureOffsetWCS`, `rotaryOffsetWCS`, `useClampCodes`, `centerPointOutput`, `useCAS`, `useTPOC`.
@@ -94,6 +94,13 @@ Historical numbered variants (`okuma 2.cps`, `okuma 2 2.cps`, `okuma 3.cps`) and
     - `secondaryHomePositionNumber` (integer, default `5`, range 1–9) — the `P` value.
   - Output: `G30 P<n>` is emitted in `onClose`, after the final `writeRetract(Z)` and the optional XY-home retract, and before `setSpindleLoadMonitor(false)`. By that point spindle is stopped, coolant is off, the work plane is canceled, and Z is at retract height — so the absolute move to the secondary reference point is safe.
   - Marker comment: `// CUSTOM: optional G30 P<n>` (one site in `properties`, one in `onClose`).
+
+- **Optional clearance-height transitions between work offsets.**
+  - Property (group `homePositions`):
+    - `useClearanceHeightBetweenWCS` (boolean, default `false`) — permits a same-tool transition that changes only the WCS to stay at the Fusion operation clearance height instead of retracting to the machine safe position. This is intentionally opt-in because it assumes every participating work offset has the same Z-zero and that every programmed clearance plane clears all parts and fixtures.
+  - The bypass is narrowly gated in `onSection`: it applies only when the WCS is the sole retract trigger. Tool changes, work-plane/rotary changes, simultaneous multi-axis sections, active or upcoming TCP, and smoothing cancellation retain the normal full retract. Tool length compensation remains active across an eligible transition; `writeInitialPositioning` raises to the next section's higher initial clearance before moving XY when necessary.
+  - When enabled for a program containing more than one WCS, `validateCommonParameters` writes a prominent warning to both the post log and NC header.
+  - Marker comment: `// CUSTOM: clearance-height WCS changes` (property and `onSection` gate), plus the warning site in `validateCommonParameters`.
 
 - **Output as subroutine + auto-generated main program (two files).**
   - Properties (group `programBehavior`):

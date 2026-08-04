@@ -70,7 +70,7 @@ groupDefinitions = {
   },
   homePositions: {
     title      : "Home & Retract Positions",
-    description: "Retract method, XY-home behavior on indexing, and secondary-home (G30 P<n>) options for program stops and program end.",
+    description: "Retract method, optional clearance-height WCS transitions, XY-home behavior on indexing, and secondary-home (G30 P<n>) options for program stops and program end.",
     order      : 2
   },
   tool: {
@@ -172,6 +172,17 @@ properties = {
   forceHomeOnIndexing: {
     title      : "Force XY home position on indexing",
     description: "Move XY to their home positions on multi-axis indexing.",
+    group      : "homePositions",
+    type       : "boolean",
+    value      : false,
+    scope      : "post"
+  },
+  // CUSTOM: clearance-height WCS changes. Optionally stay at the programmed
+  // clearance height for a pure WCS change. This assumes every participating
+  // work offset has the same Z-zero.
+  useClearanceHeightBetweenWCS: {
+    title      : "Use clearance height between WCS offsets",
+    description: "UNSAFE unless every WCS has the same Z-zero and the programmed clearance height clears all parts and fixtures. When enabled, a same-tool transition that only changes the work offset keeps tool length compensation active and uses the Fusion operation clearance height instead of fully retracting. Tool changes, work-plane/rotary changes, simultaneous multi-axis/TCP transitions, and smoothing changes still fully retract.",
     group      : "homePositions",
     type       : "boolean",
     value      : false,
@@ -1596,7 +1607,17 @@ function onSection() {
     Vector.diff(defineWorkPlane(getPreviousSection(), false), defineWorkPlane(currentSection, false)).length > 1e-4);
   initializeSmoothing(); // initialize smoothing mode
 
-  if (insertToolCall || newWorkOffset || newWorkPlane || smoothing.cancel || state.tcpIsActive || currentSection.isMultiAxis()) {
+  // CUSTOM: clearance-height WCS changes. Fusion ends each section at its
+  // programmed clearance height. For a pure same-tool WCS change, leave tool
+  // length compensation active and let writeInitialPositioning raise farther to
+  // the next section's initial clearance (when needed) before its XY move. Every
+  // other retract reason keeps the stock full-retract path below.
+  var clearanceHeightWCSChange = getProperty("useClearanceHeightBetweenWCS") &&
+    !isFirstSection() && newWorkOffset && !insertToolCall && !newWorkPlane &&
+    !smoothing.cancel && !state.tcpIsActive && !tcp.isSupportedByOperation &&
+    !getPreviousSection().isMultiAxis() && !currentSection.isMultiAxis();
+
+  if (insertToolCall || (newWorkOffset && !clearanceHeightWCSChange) || newWorkPlane || smoothing.cancel || state.tcpIsActive || currentSection.isMultiAxis()) {
     var purgeThroughSpindleAir = false;
     if (insertToolCall && !isFirstSection()) {
       purgeThroughSpindleAir = coolantOffWithThroughSpindlePurge(); // turn off coolant (+ start through-spindle air purge) before retract during tool change
@@ -4744,6 +4765,18 @@ function validateCommonParameters() {
       "Raise the Z-axis to a safe height before starting the program.";
     warning(msg);
     writeComment(msg);
+  }
+  // CUSTOM: prominently flag the intentionally unsafe multi-WCS clearance-height
+  // mode in both the post log and the NC header when it can affect this program.
+  if (getProperty("useClearanceHeightBetweenWCS") && getUniqueWorkOffsets(true).length > 1) {
+    if (getProperty("safePositionMethod") == "clearanceHeight") {
+      error(localize("'Use clearance height between WCS offsets' requires 'Safe Retracts' to be set to G0 or G16 so tool changes still fully retract."));
+    }
+    var wcsMsg = "-Attention- 'Use clearance height between WCS offsets' is enabled." + EOL +
+      "Every WCS must have the same Z-zero, and every programmed clearance height must clear all parts and fixtures." + EOL +
+      "Verify the NC program and machine setup before running.";
+    warning(wcsMsg);
+    writeComment(wcsMsg);
   }
 }
 
